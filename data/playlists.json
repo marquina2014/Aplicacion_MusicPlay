@@ -1,0 +1,21 @@
+[
+  {
+    "id": "favorites",
+    "name": "Tus me gusta",
+    "description": "Tus canciones favoritas guardadas",
+    "isSystem": true,
+    "cover": "https://i.ytimg.com/vi/8zrfLhGYknU/hq720.jpg",
+    "createdAt": 1788622800000,
+    "tracks": [
+      {
+        "id": "8zrfLhGYknU",
+        "title": "2 Caras 2 Corazones",
+        "artist": "Caramelos De Cianuro",
+        "thumbnail": "https://i.ytimg.com/vi/8zrfLhGYknU/hq720.jpg",
+        "duration": 200,
+        "durationFormatted": "3:20",
+        "addedAt": 1788837211146
+      }
+    ]
+  }
+]
