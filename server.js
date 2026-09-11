@@ -72,8 +72,7 @@ function resolveAudioUrl(videoId, forceFresh = false) {
     }
 
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-    const args = [
-      '-m', 'yt_dlp',
+    const ytArgs = [
       '--no-warnings',
       '--js-runtimes', 'node',
       '-g',
@@ -81,26 +80,33 @@ function resolveAudioUrl(videoId, forceFresh = false) {
       videoUrl
     ];
 
-    execFile('python', args, { timeout: 20000 }, (error, stdout, stderr) => {
-      if (error) {
-        console.error(`yt-dlp error for ${videoId}:`, stderr || error.message);
-        return reject(new Error('Failed to extract audio stream'));
-      }
-
-      const lines = stdout.trim().split('\n').map(l => l.trim()).filter(l => l.startsWith('http'));
-      if (!lines.length) {
-        return reject(new Error('No stream URL found in output'));
-      }
-
-      const streamUrl = lines[0];
-      // Cache for 3 hours (YouTube stream URLs usually expire in 4-6 hours)
-      streamCache.set(videoId, {
-        url: streamUrl,
-        expiresAt: Date.now() + 3 * 60 * 60 * 1000
+    function runExtractor(cmd, args) {
+      return new Promise((res, rej) => {
+        execFile(cmd, args, { timeout: 25000 }, (error, stdout, stderr) => {
+          if (error) return rej(error);
+          const lines = stdout.trim().split('\n').map(l => l.trim()).filter(l => l.startsWith('http'));
+          if (!lines.length) return rej(new Error('No stream URL found in output'));
+          res(lines[0]);
+        });
       });
+    }
 
-      resolve(streamUrl);
-    });
+    // Try direct yt-dlp binary, then python3 -m yt_dlp, then python -m yt_dlp
+    runExtractor('yt-dlp', ytArgs)
+      .catch(() => runExtractor('python3', ['-m', 'yt_dlp', ...ytArgs]))
+      .catch(() => runExtractor('python', ['-m', 'yt_dlp', ...ytArgs]))
+      .then(streamUrl => {
+        // Cache for 3 hours
+        streamCache.set(videoId, {
+          url: streamUrl,
+          expiresAt: Date.now() + 3 * 60 * 60 * 1000
+        });
+        resolve(streamUrl);
+      })
+      .catch(err => {
+        console.error(`yt-dlp error for ${videoId}:`, err.message);
+        reject(new Error('Failed to extract audio stream'));
+      });
   });
 }
 
