@@ -1,4 +1,4 @@
-const CACHE_NAME = 'spotify-v4';
+const CACHE_NAME = 'spotify-v5';
 
 self.addEventListener('install', event => {
   self.skipWaiting();
