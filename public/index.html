@@ -17,7 +17,7 @@
   <link rel="icon" type="image/png" href="/icons/icon-192.png">
 
   <!-- Stylesheet -->
-  <link rel="stylesheet" href="/css/spotify.css?v=6">
+  <link rel="stylesheet" href="/css/spotify.css?v=7">
 
   <script>
     // Limpieza de caché antigua para mostrar cambios al instante
@@ -473,11 +473,18 @@
     <!-- Toast Notification -->
     <div id="toast"></div>
 
+    <!-- Hidden YouTube Player Container (Official IFrame API) -->
+    <div id="yt-player-container" style="position:fixed; bottom:-9999px; left:-9999px; width:1px; height:1px; opacity:0; pointer-events:none; z-index:-100;">
+      <div id="yt-iframe-placeholder"></div>
+    </div>
+
   <!-- Scripts -->
+  <!-- Official YouTube IFrame API -->
+  <script src="https://www.youtube.com/iframe_api"></script>
   <script src="/js/supabase.js"></script>
-  <script src="/js/supabase-config.js?v=6"></script>
-  <script src="/js/player.js?v=6"></script>
-  <script src="/js/app.js?v=6"></script>
+  <script src="/js/supabase-config.js?v=7"></script>
+  <script src="/js/player.js?v=7"></script>
+  <script src="/js/app.js?v=7"></script>
 
   <script>
     // Exact viewport height handler for mobile Safari / PWA

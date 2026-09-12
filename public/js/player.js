@@ -4,10 +4,9 @@
  */
 class SpotifyPlayer {
   constructor() {
-    this.audio = new Audio();
-    this.audio.preload = 'auto';
-    this.audio.setAttribute('playsinline', 'true');
-    this.audio.setAttribute('webkit-playsinline', 'true');
+    this.ytPlayer = null;
+    this.isYtReady = false;
+    this.pendingVideoId = null;
 
     this.currentTrack = null;
     this.queue = [];
@@ -18,7 +17,9 @@ class SpotifyPlayer {
     this.repeatMode = 'off'; // 'off' | 'all' | 'one'
 
     this.listeners = new Map();
-    this.setupAudioEvents();
+    this.progressInterval = null;
+
+    this.initYouTubeAPI();
     this.setupMediaSession();
   }
 
@@ -41,57 +42,120 @@ class SpotifyPlayer {
     }
   }
 
-  setupAudioEvents() {
-    this.audio.addEventListener('play', () => {
+  initYouTubeAPI() {
+    const setup = () => {
+      if (typeof YT !== 'undefined' && YT.Player) {
+        this.createYouTubePlayer();
+      } else {
+        window.onYouTubeIframeAPIReady = () => {
+          this.createYouTubePlayer();
+        };
+      }
+    };
+
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+      setup();
+    } else {
+      window.addEventListener('DOMContentLoaded', setup);
+    }
+  }
+
+  createYouTubePlayer() {
+    try {
+      this.ytPlayer = new YT.Player('yt-iframe-placeholder', {
+        height: '1',
+        width: '1',
+        playerVars: {
+          autoplay: 1,
+          controls: 0,
+          disablekb: 1,
+          fs: 0,
+          modestbranding: 1,
+          playsinline: 1,
+          rel: 0
+        },
+        events: {
+          onReady: () => {
+            this.isYtReady = true;
+            if (this.pendingVideoId) {
+              const vid = this.pendingVideoId;
+              this.pendingVideoId = null;
+              this.ytPlayer.loadVideoById(vid);
+            }
+          },
+          onStateChange: (event) => {
+            this.handlePlayerStateChange(event.data);
+          },
+          onError: (event) => {
+            console.error('YouTube Player Error code:', event.data);
+            this.isLoading = false;
+            this.isPlaying = false;
+            this.emit('loading', false);
+            this.emit('error', 'Canción no disponible, pasando a la siguiente...');
+            setTimeout(() => this.next(), 1000);
+          }
+        }
+      });
+    } catch (e) {
+      console.error('Failed to create YouTube player instance:', e);
+    }
+  }
+
+  handlePlayerStateChange(state) {
+    // YT.PlayerState: UNSTARTED (-1), ENDED (0), PLAYING (1), PAUSED (2), BUFFERING (3), CUED (5)
+    if (state === 1) { // PLAYING
       this.isPlaying = true;
-      this.updateMediaSessionState();
-      this.emit('play');
-    });
-
-    this.audio.addEventListener('pause', () => {
-      this.isPlaying = false;
-      this.updateMediaSessionState();
-      this.emit('pause');
-    });
-
-    this.audio.addEventListener('waiting', () => {
-      this.isLoading = true;
-      this.emit('loading', true);
-    });
-
-    this.audio.addEventListener('playing', () => {
       this.isLoading = false;
-      this.isPlaying = true;
       this.emit('loading', false);
       this.emit('play');
-    });
-
-    this.audio.addEventListener('timeupdate', () => {
-      this.emit('timeupdate', {
-        currentTime: this.audio.currentTime,
-        duration: this.audio.duration || 0,
-        progress: (this.audio.currentTime / (this.audio.duration || 1)) * 100
-      });
-      this.updateMediaSessionPosition();
-    });
-
-    this.audio.addEventListener('ended', () => {
+      this.updateMediaSessionState();
+      this.startProgressTracking();
+    } else if (state === 2) { // PAUSED
+      this.isPlaying = false;
+      this.isLoading = false;
+      this.emit('loading', false);
+      this.emit('pause');
+      this.updateMediaSessionState();
+      this.stopProgressTracking();
+    } else if (state === 3) { // BUFFERING
+      this.isLoading = true;
+      this.emit('loading', true);
+    } else if (state === 0) { // ENDED
+      this.stopProgressTracking();
       this.emit('ended');
       if (this.repeatMode === 'one') {
-        this.audio.currentTime = 0;
-        this.audio.play().catch(console.warn);
+        this.seek(0);
+        this.play();
       } else {
         this.next();
       }
-    });
+    }
+  }
 
-    this.audio.addEventListener('error', (e) => {
-      console.error('Audio playback error:', e, this.audio.error);
-      this.isLoading = false;
-      this.isPlaying = false;
-      this.emit('loading', false);
-      this.emit('error', 'Error al reproducir el audio');
-    });
+  startProgressTracking() {
+    this.stopProgressTracking();
+    this.progressInterval = setInterval(() => {
+      if (!this.ytPlayer || typeof this.ytPlayer.getCurrentTime !== 'function') return;
+
+      const currentTime = this.ytPlayer.getCurrentTime() || 0;
+      const duration = this.ytPlayer.getDuration() || (this.currentTrack ? this.currentTrack.duration : 0);
+      const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
+
+      this.emit('timeupdate', {
+        currentTime,
+        duration,
+        progress: Math.min(100, Math.max(0, progress))
+      });
+
+      this.updateMediaSessionPosition(currentTime, duration);
+    }, 500);
+  }
+
+  stopProgressTracking() {
+    if (this.progressInterval) {
+      clearInterval(this.progressInterval);
+      this.progressInterval = null;
+    }
   }
 
   setupMediaSession() {
@@ -137,21 +201,21 @@ class SpotifyPlayer {
 
   updateMediaSessionState() {
     if (!('mediaSession' in navigator)) return;
-    navigator.mediaSession.playbackState = (!this.audio.paused && this.isPlaying) ? 'playing' : 'paused';
+    navigator.mediaSession.playbackState = this.isPlaying ? 'playing' : 'paused';
   }
 
-  updateMediaSessionPosition() {
+  updateMediaSessionPosition(currentTime, duration) {
     if (!('mediaSession' in navigator) || !('setPositionState' in navigator.mediaSession)) return;
     try {
-      if (this.audio.duration && !isNaN(this.audio.duration) && !isNaN(this.audio.currentTime)) {
+      if (duration && !isNaN(duration) && !isNaN(currentTime)) {
         navigator.mediaSession.setPositionState({
-          duration: this.audio.duration,
-          playbackRate: this.audio.playbackRate || 1,
-          position: this.audio.currentTime
+          duration: Math.max(0, duration),
+          playbackRate: 1,
+          position: Math.min(duration, Math.max(0, currentTime))
         });
       }
     } catch (e) {
-      // Ignored for rapidly changing positions
+      // Ignored for rapid updates
     }
   }
 
@@ -173,55 +237,41 @@ class SpotifyPlayer {
     this.emit('trackchange', this.currentTrack);
     this.updateMediaSessionMetadata(track);
 
-    // Stream URL from our backend
-    const streamUrl = `/api/stream/${track.id}`;
-    this.audio.src = streamUrl;
-    this.audio.load();
-
-    const playPromise = this.audio.play();
-    if (playPromise !== undefined) {
-      playPromise
-        .then(() => {
-          this.isPlaying = true;
-          this.isLoading = false;
-          this.emit('loading', false);
-          this.emit('play');
-        })
-        .catch(err => {
-          // If paused by user before playback starts, ignore abort
-          if (err.name === 'AbortError') {
-            console.log('Play interrupted by pause');
-            return;
-          }
-          console.warn('Playback initiation error:', err);
-          this.isPlaying = false;
-          this.isLoading = false;
-          this.emit('loading', false);
-          this.emit('pause');
+    if (this.isYtReady && this.ytPlayer && typeof this.ytPlayer.loadVideoById === 'function') {
+      try {
+        this.ytPlayer.loadVideoById({
+          videoId: track.id,
+          suggestedQuality: 'small'
         });
+      } catch (e) {
+        console.warn('Error loading video by ID:', e);
+        this.pendingVideoId = track.id;
+      }
+    } else {
+      this.pendingVideoId = track.id;
     }
   }
 
   play() {
-    if (!this.audio.src && this.currentTrack) {
+    if (this.ytPlayer && typeof this.ytPlayer.playVideo === 'function') {
+      try {
+        this.ytPlayer.playVideo();
+      } catch (e) {
+        console.warn('Play video error:', e);
+      }
+    } else if (this.currentTrack) {
       this.loadAndPlay(this.currentTrack, this.queue, this.queueIndex);
-      return;
-    }
-    this.isPlaying = true;
-    this.emit('play');
-    const playPromise = this.audio.play();
-    if (playPromise !== undefined) {
-      playPromise.catch(err => {
-        if (err.name === 'AbortError') return;
-        console.warn('Audio play error:', err);
-        this.isPlaying = false;
-        this.emit('pause');
-      });
     }
   }
 
   pause() {
-    this.audio.pause();
+    if (this.ytPlayer && typeof this.ytPlayer.pauseVideo === 'function') {
+      try {
+        this.ytPlayer.pauseVideo();
+      } catch (e) {
+        console.warn('Pause video error:', e);
+      }
+    }
     this.isPlaying = false;
     this.isLoading = false;
     this.emit('loading', false);
@@ -229,7 +279,7 @@ class SpotifyPlayer {
   }
 
   togglePlay() {
-    if (!this.audio.paused) {
+    if (this.isPlaying) {
       this.pause();
     } else {
       this.play();
@@ -237,17 +287,22 @@ class SpotifyPlayer {
   }
 
   seek(seconds) {
-    if (this.audio.duration && !isNaN(this.audio.duration)) {
-      const target = Math.max(0, Math.min(seconds, this.audio.duration));
-      this.audio.currentTime = target;
-      this.updateMediaSessionPosition();
+    if (this.ytPlayer && typeof this.ytPlayer.seekTo === 'function') {
+      try {
+        this.ytPlayer.seekTo(seconds, true);
+      } catch (e) {}
     }
   }
 
   seekByPercentage(percentage) {
-    if (this.audio.duration && !isNaN(this.audio.duration)) {
-      const target = (percentage / 100) * this.audio.duration;
-      this.seek(target);
+    if (this.ytPlayer && typeof this.ytPlayer.getDuration === 'function') {
+      try {
+        const dur = this.ytPlayer.getDuration();
+        if (dur > 0) {
+          const target = (percentage / 100) * dur;
+          this.seek(target);
+        }
+      } catch (e) {}
     }
   }
 
@@ -263,7 +318,6 @@ class SpotifyPlayer {
         if (this.repeatMode === 'all') {
           nextIndex = 0;
         } else {
-          // Reached end of playlist
           this.pause();
           return;
         }
@@ -275,8 +329,8 @@ class SpotifyPlayer {
   }
 
   previous() {
-    // If playing more than 3 seconds, restart current track
-    if (this.audio.currentTime > 3) {
+    const cur = (this.ytPlayer && typeof this.ytPlayer.getCurrentTime === 'function') ? this.ytPlayer.getCurrentTime() : 0;
+    if (cur > 3) {
       this.seek(0);
       return;
     }
