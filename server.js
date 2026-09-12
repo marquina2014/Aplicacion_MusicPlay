@@ -75,8 +75,9 @@ function resolveAudioUrl(videoId, forceFresh = false) {
     const ytArgs = [
       '--no-warnings',
       '--js-runtimes', 'node',
+      '--extractor-args', 'youtube:player_client=android,ios,tvhtml5,web',
       '-g',
-      '-f', 'ba[ext=m4a]/ba/best',
+      '-f', 'ba[ext=m4a]/ba/bestaudio/b/best',
       videoUrl
     ];
 
