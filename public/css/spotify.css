@@ -12,7 +12,7 @@
   --primary-bright: #1ed760;
   --danger: #e91429;
   --border-color: rgba(255, 255, 255, 0.1);
-  --nav-height: 50px;
+  --nav-height: 48px;
   --mini-player-height: 56px;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
@@ -444,7 +444,7 @@ body {
 /* Mini Player Bar (Fixed above bottom nav) */
 #mini-player {
   position: fixed;
-  bottom: calc(var(--nav-height) + var(--safe-bottom) + 6px);
+  bottom: calc(48px + env(safe-area-inset-bottom, 10px) + 6px);
   left: 8px;
   right: 8px;
   height: var(--mini-player-height);
@@ -690,8 +690,9 @@ body {
   bottom: 0 !important;
   left: 0;
   right: 0;
-  height: calc(52px + env(safe-area-inset-bottom, 0px));
-  padding-bottom: env(safe-area-inset-bottom, 0px);
+  height: calc(48px + env(safe-area-inset-bottom, 10px));
+  padding-top: 4px;
+  padding-bottom: calc(env(safe-area-inset-bottom, 10px) - 6px);
   background: #121212 !important;
   display: flex;
   align-items: center;
@@ -719,8 +720,8 @@ body {
   border: none;
   color: var(--text-subdued);
   cursor: pointer;
-  padding: 4px 12px;
-  gap: 3px;
+  padding: 2px 14px;
+  gap: 2px;
   transition: color 0.15s;
 }
 .nav-tab svg {
@@ -729,9 +730,9 @@ body {
   fill: currentColor;
 }
 .nav-tab span {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
-  letter-spacing: -0.2px;
+  letter-spacing: -0.1px;
 }
 .nav-tab.active {
   color: #ffffff;
