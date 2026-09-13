@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Spotify Web</title>
 
   <!-- PWA & iOS Safari tags -->
@@ -17,7 +17,7 @@
   <link rel="icon" type="image/png" href="/icons/icon-192.png">
 
   <!-- Stylesheet -->
-  <link rel="stylesheet" href="/css/spotify.css?v=8">
+  <link rel="stylesheet" href="/css/spotify.css?v=10">
 
   <script>
     // Limpieza de caché antigua para mostrar cambios al instante
@@ -160,7 +160,6 @@
       </section>
 
     </main>
-  </div>
 
     <!-- Mini Player Bar (Floating above bottom navigation) -->
     <div id="mini-player" class="hidden">
@@ -476,24 +475,15 @@
       <div id="yt-iframe-placeholder"></div>
     </div>
 
+  </div><!-- /#app -->
+
   <!-- Scripts -->
   <!-- Official YouTube IFrame API -->
   <script src="https://www.youtube.com/iframe_api"></script>
   <script src="/js/supabase.js"></script>
-  <script src="/js/supabase-config.js?v=8"></script>
-  <script src="/js/player.js?v=8"></script>
-  <script src="/js/app.js?v=8"></script>
-
-  <script>
-    // Exact viewport height handler for mobile Safari / PWA
-    function updateViewportHeight() {
-      const vh = window.innerHeight;
-      document.documentElement.style.setProperty('--app-height', `${vh}px`);
-    }
-    window.addEventListener('resize', updateViewportHeight);
-    window.addEventListener('orientationchange', updateViewportHeight);
-    updateViewportHeight();
-  </script>
+  <script src="/js/supabase-config.js?v=10"></script>
+  <script src="/js/player.js?v=10"></script>
+  <script src="/js/app.js?v=10"></script>
 
   <script>
     // Update dynamic greeting on home

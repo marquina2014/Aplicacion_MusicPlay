@@ -12,10 +12,8 @@
   --primary-bright: #1ed760;
   --danger: #e91429;
   --border-color: rgba(255, 255, 255, 0.1);
-  --nav-height: 48px;
+  --nav-height: 60px;
   --mini-player-height: 56px;
-  --safe-top: env(safe-area-inset-top, 0px);
-  --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 * {
@@ -27,15 +25,18 @@
 
 html {
   width: 100%;
-  height: 100%;
-  background: #121212;
+  min-height: 100%;
+  background-color: #121212;
 }
 
 body {
+  margin: 0;
+  padding: 0;
   width: 100%;
-  height: 100%;
-  overflow: hidden;
-  background: #121212;
+  min-height: 100vh;
+  min-height: -webkit-fill-available;
+  overflow-x: hidden;
+  background-color: #121212;
   color: var(--text-base);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -47,26 +48,21 @@ body {
 
 /* App Container */
 #app {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  min-height: 100vh;
+  min-height: -webkit-fill-available;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
   background: #121212;
-  padding-top: env(safe-area-inset-top, 0px);
+  width: 100%;
+  position: relative;
 }
 
 /* Main Content Area */
 #main-content {
   flex: 1;
-  overflow-y: auto;
+  width: 100%;
+  padding-bottom: 160px;
   overflow-x: hidden;
-  -webkit-overflow-scrolling: touch;
-  padding-bottom: calc(var(--nav-height) + var(--mini-player-height) + env(safe-area-inset-bottom, 0px) + 24px);
-  scroll-behavior: smooth;
 }
 
 /* Scrollbar styling */
@@ -441,26 +437,31 @@ body {
   background: var(--primary-bright);
 }
 
-/* Mini Player Bar (Fixed above bottom nav) */
+/* Mini Player Bar (Floating above bottom navigation) */
 #mini-player {
   position: fixed;
-  bottom: calc(48px + env(safe-area-inset-bottom, 10px) + 6px);
-  left: 8px;
-  right: 8px;
+  bottom: 84px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: calc(100% - 24px);
+  max-width: 440px;
   height: var(--mini-player-height);
-  background: #282828;
-  border-radius: 8px;
+  background: rgba(36, 36, 36, 0.96);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
   display: flex;
   align-items: center;
   padding: 0 12px;
-  z-index: 100;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.7);
+  z-index: 95;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
   transition: transform 0.3s cubic-bezier(0.2, 0, 0, 1), opacity 0.3s;
   cursor: pointer;
   overflow: hidden;
 }
 #mini-player.hidden {
-  transform: translateY(120px);
+  transform: translate(-50%, 120px);
   opacity: 0;
   pointer-events: none;
 }
@@ -684,32 +685,26 @@ body {
   background: #e6e6e6;
 }
 
-/* Bottom Navigation Bar */
+/* Bottom Navigation Bar (Floating dock like Al Cambio PRO) */
 #bottom-nav {
   position: fixed;
-  bottom: 0 !important;
-  left: 0;
-  right: 0;
-  height: calc(48px + env(safe-area-inset-bottom, 10px));
-  padding-top: 4px;
-  padding-bottom: calc(env(safe-area-inset-bottom, 10px) - 6px);
-  background: #121212 !important;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: calc(100% - 24px);
+  max-width: 440px;
+  height: 58px;
+  background: rgba(22, 22, 22, 0.94);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-radius: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
+  padding: 4px 12px;
   display: flex;
   align-items: center;
   justify-content: space-around;
   z-index: 90;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-}
-#bottom-nav::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: -200px;
-  background: #121212;
-  z-index: -1;
-  pointer-events: none;
 }
 .nav-tab {
   display: flex;
@@ -720,9 +715,14 @@ body {
   border: none;
   color: var(--text-subdued);
   cursor: pointer;
-  padding: 2px 14px;
-  gap: 2px;
-  transition: color 0.15s;
+  padding: 6px 16px;
+  border-radius: 18px;
+  gap: 3px;
+  transition: all 0.2s ease;
+}
+.nav-tab:hover,
+.nav-tab.active {
+  color: #ffffff;
 }
 .nav-tab svg {
   width: 22px;
@@ -730,12 +730,9 @@ body {
   fill: currentColor;
 }
 .nav-tab span {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: -0.1px;
-}
-.nav-tab.active {
-  color: #ffffff;
 }
 
 /* Modals & Dialogs */
