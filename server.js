@@ -63,6 +63,39 @@ function savePlaylists(playlists) {
   }
 }
 
+// Helper: Get cookies file path if available
+function getCookiesPath() {
+  if (process.env.COOKIES_PATH && fs.existsSync(process.env.COOKIES_PATH)) {
+    return process.env.COOKIES_PATH;
+  }
+  const renderSecretPath = '/etc/secrets/cookies.txt';
+  if (fs.existsSync(renderSecretPath)) {
+    return renderSecretPath;
+  }
+  const localCookies = path.join(__dirname, 'cookies.txt');
+  if (fs.existsSync(localCookies)) {
+    return localCookies;
+  }
+  if (process.env.YOUTUBE_COOKIES) {
+    try {
+      const generatedPath = path.join(__dirname, 'cookies_generated.txt');
+      if (!fs.existsSync(generatedPath)) {
+        let content = process.env.YOUTUBE_COOKIES.trim();
+        if (!content.includes('\t') && content.length > 50) {
+          try {
+            content = Buffer.from(content, 'base64').toString('utf-8');
+          } catch (_) {}
+        }
+        fs.writeFileSync(generatedPath, content, 'utf-8');
+      }
+      return generatedPath;
+    } catch (e) {
+      console.warn('Could not write cookies from env:', e.message);
+    }
+  }
+  return null;
+}
+
 // Helper: Resolve audio stream URL with yt-dlp
 function resolveAudioUrl(videoId, forceFresh = false) {
   return new Promise((resolve, reject) => {
@@ -74,12 +107,18 @@ function resolveAudioUrl(videoId, forceFresh = false) {
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
     const ytArgs = [
       '--no-warnings',
+      '--no-playlist',
       '--js-runtimes', 'node',
       '--extractor-args', 'youtube:player_client=android,ios,tvhtml5,web',
       '-g',
       '-f', 'ba[ext=m4a]/ba/bestaudio/b/best',
       videoUrl
     ];
+
+    const cookiesPath = getCookiesPath();
+    if (cookiesPath) {
+      ytArgs.unshift('--cookies', cookiesPath);
+    }
 
     function runExtractor(cmd, args) {
       return new Promise((res, rej) => {
@@ -92,22 +131,35 @@ function resolveAudioUrl(videoId, forceFresh = false) {
       });
     }
 
-    // Try direct yt-dlp binary, then python3 -m yt_dlp, then python -m yt_dlp
-    runExtractor('yt-dlp', ytArgs)
-      .catch(() => runExtractor('python3', ['-m', 'yt_dlp', ...ytArgs]))
-      .catch(() => runExtractor('python', ['-m', 'yt_dlp', ...ytArgs]))
-      .then(streamUrl => {
-        // Cache for 3 hours
-        streamCache.set(videoId, {
-          url: streamUrl,
-          expiresAt: Date.now() + 3 * 60 * 60 * 1000
-        });
-        resolve(streamUrl);
-      })
-      .catch(err => {
-        console.error(`yt-dlp error for ${videoId}:`, err.message);
-        reject(new Error('Failed to extract audio stream'));
-      });
+    const isWin = process.platform === 'win32';
+    const localBin = path.join(__dirname, isWin ? 'yt-dlp.exe' : 'yt-dlp');
+    const candidates = [];
+    if (fs.existsSync(localBin)) {
+      candidates.push({ cmd: localBin, args: ytArgs });
+    }
+    candidates.push({ cmd: 'yt-dlp', args: ytArgs });
+    candidates.push({ cmd: 'python3', args: ['-m', 'yt_dlp', ...ytArgs] });
+    candidates.push({ cmd: 'python', args: ['-m', 'yt_dlp', ...ytArgs] });
+
+    async function tryCandidates() {
+      let lastErr = null;
+      for (const cand of candidates) {
+        try {
+          const streamUrl = await runExtractor(cand.cmd, cand.args);
+          streamCache.set(videoId, {
+            url: streamUrl,
+            expiresAt: Date.now() + 3 * 60 * 60 * 1000
+          });
+          return resolve(streamUrl);
+        } catch (err) {
+          lastErr = err;
+        }
+      }
+      console.error(`yt-dlp extraction error for ${videoId}:`, lastErr ? lastErr.message : 'Unknown error');
+      reject(new Error('Failed to extract audio stream'));
+    }
+
+    tryCandidates();
   });
 }
 
@@ -369,6 +421,21 @@ app.listen(PORT, '0.0.0.0', () => {
     qrcode.generate(networkUrl, { small: true });
   } catch (e) {
     console.log('QR Code could not be generated in terminal.');
+  }
+
+  const cookiesFound = getCookiesPath();
+  if (cookiesFound) {
+    console.log(`🍪 Cookies de YouTube activas: ${cookiesFound}`);
+  } else {
+    console.log('ℹ️ Sin archivo de cookies. (En Render: configurar Secret File "cookies.txt")');
+  }
+
+  const isWin = process.platform === 'win32';
+  const localBin = path.join(__dirname, isWin ? 'yt-dlp.exe' : 'yt-dlp');
+  if (fs.existsSync(localBin)) {
+    console.log(`⚡ Binario de yt-dlp local detectado: ${localBin}`);
+  } else {
+    console.log('⚡ yt-dlp: usando binario del sistema o python.');
   }
 
   console.log('='.repeat(50) + '\n');

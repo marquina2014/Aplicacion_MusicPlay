@@ -1,0 +1,22 @@
+﻿# Dependencies
+node_modules/
+
+# YouTube Cookies (Private session credentials - DO NOT COMMIT)
+cookies.txt
+*.cookies
+*.cookie
+
+# yt-dlp standalone binaries
+yt-dlp
+yt-dlp.exe
+
+# Environment & Logs
+.env
+*.log
+npm-debug.log*
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
