@@ -123,7 +123,7 @@ function resolveAudioUrl(videoId, forceFresh = false) {
         '--no-warnings',
         '--no-playlist',
         '-g',
-        '-f', 'ba[ext=m4a]/ba/bestaudio/b/best',
+        '-f', 'bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio/best',
         '--extractor-args', `youtube:player_client=${playerClient}`
       ];
       if (cookiesPath) args.unshift('--cookies', cookiesPath);
