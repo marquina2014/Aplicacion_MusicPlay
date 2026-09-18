@@ -105,16 +105,64 @@ function getCookiesPath() {
   return null;
 }
 
-// Invidious public instances (fallback chain, no datacenter IP restrictions)
-const INVIDIOUS_INSTANCES = [
-  'https://invidious.io',
-  'https://yt.cdaut.de',
-  'https://inv.riverside.rocks',
-  'https://invidious.nerdvpn.de',
-  'https://iv.datura.network',
+// Piped API instances (reliable YouTube frontend, no datacenter IP restrictions)
+const PIPED_INSTANCES = [
+  'https://pipedapi.kavin.rocks',
+  'https://pipedapi.syncpundit.io',
+  'https://api.piped.projectsegfau.lt',
 ];
 
-// Resolve audio URL via Invidious API (no bot detection issues from datacenter IPs)
+// Invidious public instances (secondary fallback)
+const INVIDIOUS_INSTANCES = [
+  'https://inv.nadeko.net',
+  'https://invidious.privacydev.net',
+  'https://invidious.lunar.icu',
+  'https://yt.oelrichsgarcia.de',
+  'https://invidious.perennialte.ch',
+];
+
+// Resolve audio URL via Piped API
+async function resolveViaPiped(videoId) {
+  for (const instance of PIPED_INSTANCES) {
+    try {
+      const url = `${instance}/streams/${videoId}`;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timer);
+      if (!res.ok) { console.log(`[${videoId}] Piped ${instance} HTTP ${res.status}`); continue; }
+      const data = await res.json();
+      if (data.error) { console.log(`[${videoId}] Piped ${instance} error: ${data.error}`); continue; }
+
+      const audioStreams = (data.audioStreams || [])
+        .filter(s => s.mimeType && (s.mimeType.includes('mp4') || s.mimeType.includes('m4a')))
+        .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+
+      if (audioStreams.length > 0) {
+        console.log(`[${videoId}] ✅ Piped stream via ${instance} (${audioStreams[0].bitrate}bps)`);
+        return audioStreams[0].url;
+      }
+
+      const anyAudio = (data.audioStreams || []).sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+      if (anyAudio.length > 0) {
+        console.log(`[${videoId}] ✅ Piped audio (non-m4a) via ${instance}`);
+        return anyAudio[0].url;
+      }
+
+      if (data.hls) {
+        console.log(`[${videoId}] ✅ Piped HLS via ${instance}`);
+        return data.hls;
+      }
+
+      console.log(`[${videoId}] Piped ${instance} returned no audio streams`);
+    } catch (e) {
+      console.log(`[${videoId}] Piped ${instance} error: ${e.message}`);
+    }
+  }
+  throw new Error('All Piped instances failed');
+}
+
+// Resolve audio URL via Invidious API
 async function resolveViaInvidious(videoId) {
   for (const instance of INVIDIOUS_INSTANCES) {
     try {
@@ -123,20 +171,19 @@ async function resolveViaInvidious(videoId) {
       const timer = setTimeout(() => controller.abort(), 8000);
       const res = await fetch(url, { signal: controller.signal });
       clearTimeout(timer);
-      if (!res.ok) continue;
+      if (!res.ok) { console.log(`[${videoId}] Invidious ${instance} HTTP ${res.status}`); continue; }
       const data = await res.json();
+      if (data.error) { console.log(`[${videoId}] Invidious ${instance} API error: ${data.error}`); continue; }
 
-      // Prefer m4a/aac audio-only formats (iOS compatible), sorted by bitrate descending
       const formats = (data.adaptiveFormats || [])
         .filter(f => f.type && f.type.startsWith('audio/') && (f.type.includes('mp4') || f.type.includes('m4a')))
         .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
 
       if (formats.length > 0) {
-        console.log(`[${videoId}] ✅ Invidious stream via ${instance} (${formats[0].bitrate}bps)`);
+        console.log(`[${videoId}] ✅ Invidious stream via ${instance}`);
         return formats[0].url;
       }
 
-      // Fallback: any audio format
       const anyAudio = (data.adaptiveFormats || [])
         .filter(f => f.type && f.type.startsWith('audio/'))
         .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
@@ -146,13 +193,12 @@ async function resolveViaInvidious(videoId) {
         return anyAudio[0].url;
       }
 
-      // Last resort: HLS stream
       if (data.hlsUrl) {
         console.log(`[${videoId}] ✅ Invidious HLS via ${instance}`);
         return data.hlsUrl;
       }
 
-      console.log(`[${videoId}] ${instance} returned no audio formats`);
+      console.log(`[${videoId}] Invidious ${instance} returned no audio formats`);
     } catch (e) {
       console.log(`[${videoId}] Invidious ${instance} error: ${e.message}`);
     }
@@ -201,28 +247,38 @@ function resolveViaYtDlp(videoId) {
     .catch(() => runWithArgs([]));
 }
 
-// Helper: Resolve audio stream URL — tries Invidious first, then yt-dlp
+// Helper: Resolve audio stream URL — tries Piped → Invidious → yt-dlp
 async function resolveAudioUrl(videoId, forceFresh = false) {
   const cached = streamCache.get(videoId);
   if (!forceFresh && cached && cached.expiresAt > Date.now()) return cached.url;
 
   let streamUrl;
+
+  // 1. Try Piped (most reliable for datacenter IPs)
   try {
-    streamUrl = await resolveViaInvidious(videoId);
-  } catch (e) {
-    console.log(`[${videoId}] Invidious failed, trying yt-dlp...`);
+    streamUrl = await resolveViaPiped(videoId);
+  } catch (_) {
+    // 2. Try Invidious
+    console.log(`[${videoId}] Piped failed, trying Invidious...`);
     try {
-      streamUrl = await resolveViaYtDlp(videoId);
-      console.log(`[${videoId}] ✅ yt-dlp stream resolved`);
-    } catch (e2) {
-      console.error(`[${videoId}] Both Invidious and yt-dlp failed:`, e2.message);
-      throw new Error('Failed to extract audio stream');
+      streamUrl = await resolveViaInvidious(videoId);
+    } catch (_2) {
+      // 3. Try yt-dlp as last resort
+      console.log(`[${videoId}] Invidious failed, trying yt-dlp...`);
+      try {
+        streamUrl = await resolveViaYtDlp(videoId);
+        console.log(`[${videoId}] ✅ yt-dlp stream resolved`);
+      } catch (e3) {
+        console.error(`[${videoId}] All sources failed:`, e3.message);
+        throw new Error('Failed to extract audio stream');
+      }
     }
   }
 
   streamCache.set(videoId, { url: streamUrl, expiresAt: Date.now() + 3 * 60 * 60 * 1000 });
   return streamUrl;
 }
+
 
 // API: Search YouTube
 app.get('/api/search', async (req, res) => {
