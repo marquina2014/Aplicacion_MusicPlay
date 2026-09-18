@@ -113,60 +113,57 @@ function resolveAudioUrl(videoId, forceFresh = false) {
       return resolve(cached.url);
     }
 
-    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-    const ytArgs = [
-      '--no-warnings',
-      '--no-playlist',
-      '-g',
-      '-f', 'ba[ext=m4a]/ba/bestaudio/b/best',
-      videoUrl
-    ];
-
     const cookiesPath = getCookiesPath();
-    if (cookiesPath) {
-      ytArgs.unshift('--cookies', cookiesPath);
+    const isWin = process.platform === 'win32';
+    const localBin = path.join(__dirname, isWin ? 'yt-dlp.exe' : 'yt-dlp');
+    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+
+    function buildArgs(playerClient) {
+      const args = [
+        '--no-warnings',
+        '--no-playlist',
+        '-g',
+        '-f', 'ba[ext=m4a]/ba/bestaudio/b/best',
+        '--extractor-args', `youtube:player_client=${playerClient}`
+      ];
+      if (cookiesPath) args.unshift('--cookies', cookiesPath);
+      args.push(videoUrl);
+      return args;
     }
 
     function runExtractor(cmd, args) {
       return new Promise((res, rej) => {
-        execFile(cmd, args, { timeout: 30000 }, (error, stdout, stderr) => {
+        execFile(cmd, args, { timeout: 30000 }, (error, stdout) => {
           if (error) return rej(error);
           const lines = stdout.trim().split('\n').map(l => l.trim()).filter(l => l.startsWith('http'));
-          if (!lines.length) return rej(new Error('No stream URL found in output'));
+          if (!lines.length) return rej(new Error('No stream URL found'));
           res(lines[0]);
         });
       });
     }
 
-    const isWin = process.platform === 'win32';
-    const localBin = path.join(__dirname, isWin ? 'yt-dlp.exe' : 'yt-dlp');
-    const candidates = [];
-    if (fs.existsSync(localBin)) {
-      candidates.push({ cmd: localBin, args: ytArgs });
-    }
-    candidates.push({ cmd: 'yt-dlp', args: ytArgs });
-    candidates.push({ cmd: 'python3', args: ['-m', 'yt_dlp', ...ytArgs] });
-    candidates.push({ cmd: 'python', args: ['-m', 'yt_dlp', ...ytArgs] });
-
-    async function tryCandidates() {
-      let lastErr = null;
-      for (const cand of candidates) {
-        try {
-          const streamUrl = await runExtractor(cand.cmd, cand.args);
-          streamCache.set(videoId, {
-            url: streamUrl,
-            expiresAt: Date.now() + 3 * 60 * 60 * 1000
-          });
-          return resolve(streamUrl);
-        } catch (err) {
-          lastErr = err;
-        }
-      }
-      console.error(`yt-dlp extraction error for ${videoId}:`, lastErr ? lastErr.message : 'Unknown error');
-      reject(new Error('Failed to extract audio stream'));
+    function runWithClient(playerClient) {
+      const args = buildArgs(playerClient);
+      if (fs.existsSync(localBin)) return runExtractor(localBin, args);
+      return runExtractor('python3', ['-m', 'yt_dlp', ...args])
+        .catch(() => runExtractor('python', ['-m', 'yt_dlp', ...args]));
     }
 
-    tryCandidates();
+    // Try multiple player clients in order to bypass server-side bot detection.
+    // tv_embedded and ios clients typically work from datacenter IPs without auth.
+    runWithClient('tv_embedded')
+      .catch(() => { console.log(`[${videoId}] tv_embedded failed → trying ios`); return runWithClient('ios'); })
+      .catch(() => { console.log(`[${videoId}] ios failed → trying mweb`); return runWithClient('mweb'); })
+      .catch(() => { console.log(`[${videoId}] mweb failed → trying web`); return runWithClient('web'); })
+      .then(streamUrl => {
+        console.log(`[${videoId}] ✅ Stream URL resolved`);
+        streamCache.set(videoId, { url: streamUrl, expiresAt: Date.now() + 3 * 60 * 60 * 1000 });
+        resolve(streamUrl);
+      })
+      .catch(err => {
+        console.error(`yt-dlp extraction error for ${videoId}:`, err.message);
+        reject(new Error('Failed to extract audio stream'));
+      });
   });
 }
 
