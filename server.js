@@ -63,32 +63,41 @@ function savePlaylists(playlists) {
   }
 }
 
-// Helper: Get cookies file path if available
+// Helper: Get cookies file path if available (copies to /tmp to avoid read-only filesystem issues)
 function getCookiesPath() {
+  const TMP_COOKIES = '/tmp/yt_dlp_cookies.txt';
+
+  function copyToTmp(sourcePath) {
+    try {
+      const content = fs.readFileSync(sourcePath, 'utf-8');
+      fs.writeFileSync(TMP_COOKIES, content, 'utf-8');
+      console.log(`🍪 Cookies copiadas desde ${sourcePath} → ${TMP_COOKIES}`);
+      return TMP_COOKIES;
+    } catch (e) {
+      console.warn(`Could not copy cookies from ${sourcePath}:`, e.message);
+      return null;
+    }
+  }
+
   if (process.env.COOKIES_PATH && fs.existsSync(process.env.COOKIES_PATH)) {
-    return process.env.COOKIES_PATH;
+    return copyToTmp(process.env.COOKIES_PATH) || process.env.COOKIES_PATH;
   }
   const renderSecretPath = '/etc/secrets/cookies.txt';
   if (fs.existsSync(renderSecretPath)) {
-    return renderSecretPath;
+    return copyToTmp(renderSecretPath) || renderSecretPath;
   }
   const localCookies = path.join(__dirname, 'cookies.txt');
   if (fs.existsSync(localCookies)) {
-    return localCookies;
+    return copyToTmp(localCookies) || localCookies;
   }
   if (process.env.YOUTUBE_COOKIES) {
     try {
-      const generatedPath = path.join(__dirname, 'cookies_generated.txt');
-      if (!fs.existsSync(generatedPath)) {
-        let content = process.env.YOUTUBE_COOKIES.trim();
-        if (!content.includes('\t') && content.length > 50) {
-          try {
-            content = Buffer.from(content, 'base64').toString('utf-8');
-          } catch (_) {}
-        }
-        fs.writeFileSync(generatedPath, content, 'utf-8');
+      let content = process.env.YOUTUBE_COOKIES.trim();
+      if (!content.includes('\t') && content.length > 50) {
+        try { content = Buffer.from(content, 'base64').toString('utf-8'); } catch (_) {}
       }
-      return generatedPath;
+      fs.writeFileSync(TMP_COOKIES, content, 'utf-8');
+      return TMP_COOKIES;
     } catch (e) {
       console.warn('Could not write cookies from env:', e.message);
     }
@@ -108,8 +117,6 @@ function resolveAudioUrl(videoId, forceFresh = false) {
     const ytArgs = [
       '--no-warnings',
       '--no-playlist',
-      '--js-runtimes', 'node',
-      '--extractor-args', 'youtube:player_client=android,ios,tvhtml5,web',
       '-g',
       '-f', 'ba[ext=m4a]/ba/bestaudio/b/best',
       videoUrl
@@ -122,7 +129,7 @@ function resolveAudioUrl(videoId, forceFresh = false) {
 
     function runExtractor(cmd, args) {
       return new Promise((res, rej) => {
-        execFile(cmd, args, { timeout: 25000 }, (error, stdout, stderr) => {
+        execFile(cmd, args, { timeout: 30000 }, (error, stdout, stderr) => {
           if (error) return rej(error);
           const lines = stdout.trim().split('\n').map(l => l.trim()).filter(l => l.startsWith('http'));
           if (!lines.length) return rej(new Error('No stream URL found in output'));
