@@ -105,66 +105,123 @@ function getCookiesPath() {
   return null;
 }
 
-// Helper: Resolve audio stream URL with yt-dlp
-function resolveAudioUrl(videoId, forceFresh = false) {
-  return new Promise((resolve, reject) => {
-    const cached = streamCache.get(videoId);
-    if (!forceFresh && cached && cached.expiresAt > Date.now()) {
-      return resolve(cached.url);
+// Invidious public instances (fallback chain, no datacenter IP restrictions)
+const INVIDIOUS_INSTANCES = [
+  'https://invidious.io',
+  'https://yt.cdaut.de',
+  'https://inv.riverside.rocks',
+  'https://invidious.nerdvpn.de',
+  'https://iv.datura.network',
+];
+
+// Resolve audio URL via Invidious API (no bot detection issues from datacenter IPs)
+async function resolveViaInvidious(videoId) {
+  for (const instance of INVIDIOUS_INSTANCES) {
+    try {
+      const url = `${instance}/api/v1/videos/${videoId}?fields=adaptiveFormats,hlsUrl`;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timer);
+      if (!res.ok) continue;
+      const data = await res.json();
+
+      // Prefer m4a/aac audio-only formats (iOS compatible), sorted by bitrate descending
+      const formats = (data.adaptiveFormats || [])
+        .filter(f => f.type && f.type.startsWith('audio/') && (f.type.includes('mp4') || f.type.includes('m4a')))
+        .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+
+      if (formats.length > 0) {
+        console.log(`[${videoId}] ✅ Invidious stream via ${instance} (${formats[0].bitrate}bps)`);
+        return formats[0].url;
+      }
+
+      // Fallback: any audio format
+      const anyAudio = (data.adaptiveFormats || [])
+        .filter(f => f.type && f.type.startsWith('audio/'))
+        .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+
+      if (anyAudio.length > 0) {
+        console.log(`[${videoId}] ✅ Invidious audio (non-m4a) via ${instance}`);
+        return anyAudio[0].url;
+      }
+
+      // Last resort: HLS stream
+      if (data.hlsUrl) {
+        console.log(`[${videoId}] ✅ Invidious HLS via ${instance}`);
+        return data.hlsUrl;
+      }
+
+      console.log(`[${videoId}] ${instance} returned no audio formats`);
+    } catch (e) {
+      console.log(`[${videoId}] Invidious ${instance} error: ${e.message}`);
     }
+  }
+  throw new Error('All Invidious instances failed');
+}
 
-    const cookiesPath = getCookiesPath();
-    const isWin = process.platform === 'win32';
-    const localBin = path.join(__dirname, isWin ? 'yt-dlp.exe' : 'yt-dlp');
-    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+// Resolve audio URL via yt-dlp (fallback when Invidious fails)
+function resolveViaYtDlp(videoId) {
+  const cookiesPath = getCookiesPath();
+  const isWin = process.platform === 'win32';
+  const localBin = path.join(__dirname, isWin ? 'yt-dlp.exe' : 'yt-dlp');
+  const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-    function buildArgs(playerClient) {
-      const args = [
-        '--no-warnings',
-        '--no-playlist',
-        '-g',
-        '-f', 'bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio/best',
-        '--extractor-args', `youtube:player_client=${playerClient}`
-      ];
-      if (cookiesPath) args.unshift('--cookies', cookiesPath);
-      args.push(videoUrl);
-      return args;
-    }
+  function buildArgs(extraArgs = []) {
+    const args = ['--no-warnings', '--no-playlist', '-g',
+      '-f', '140/bestaudio[ext=m4a]/bestaudio/best', ...extraArgs];
+    if (cookiesPath) args.unshift('--cookies', cookiesPath);
+    args.push(videoUrl);
+    return args;
+  }
 
-    function runExtractor(cmd, args) {
-      return new Promise((res, rej) => {
-        execFile(cmd, args, { timeout: 30000 }, (error, stdout) => {
-          if (error) return rej(error);
-          const lines = stdout.trim().split('\n').map(l => l.trim()).filter(l => l.startsWith('http'));
-          if (!lines.length) return rej(new Error('No stream URL found'));
-          res(lines[0]);
-        });
+  function run(cmd, args) {
+    return new Promise((res, rej) => {
+      execFile(cmd, args, { timeout: 30000 }, (error, stdout) => {
+        if (error) return rej(error);
+        const lines = stdout.trim().split('\n').filter(l => l.trim().startsWith('http'));
+        if (!lines.length) return rej(new Error('No URL in output'));
+        res(lines[0].trim());
       });
-    }
+    });
+  }
 
-    function runWithClient(playerClient) {
-      const args = buildArgs(playerClient);
-      if (fs.existsSync(localBin)) return runExtractor(localBin, args);
-      return runExtractor('python3', ['-m', 'yt_dlp', ...args])
-        .catch(() => runExtractor('python', ['-m', 'yt_dlp', ...args]));
-    }
+  function runWithArgs(extraArgs) {
+    const args = buildArgs(extraArgs);
+    if (fs.existsSync(localBin)) return run(localBin, args);
+    return run('python3', ['-m', 'yt_dlp', ...args])
+      .catch(() => run('python', ['-m', 'yt_dlp', ...args]));
+  }
 
-    // Try multiple player clients in order to bypass server-side bot detection.
-    // tv_embedded and ios clients typically work from datacenter IPs without auth.
-    runWithClient('tv_embedded')
-      .catch(() => { console.log(`[${videoId}] tv_embedded failed → trying ios`); return runWithClient('ios'); })
-      .catch(() => { console.log(`[${videoId}] ios failed → trying mweb`); return runWithClient('mweb'); })
-      .catch(() => { console.log(`[${videoId}] mweb failed → trying web`); return runWithClient('web'); })
-      .then(streamUrl => {
-        console.log(`[${videoId}] ✅ Stream URL resolved`);
-        streamCache.set(videoId, { url: streamUrl, expiresAt: Date.now() + 3 * 60 * 60 * 1000 });
-        resolve(streamUrl);
-      })
-      .catch(err => {
-        console.error(`yt-dlp extraction error for ${videoId}:`, err.message);
-        reject(new Error('Failed to extract audio stream'));
-      });
-  });
+  const withClient = (c) => runWithArgs(['--extractor-args', `youtube:player_client=${c}`]);
+  return withClient('tv_embedded')
+    .catch(() => withClient('ios'))
+    .catch(() => withClient('mweb'))
+    .catch(() => withClient('web'))
+    .catch(() => runWithArgs([]));
+}
+
+// Helper: Resolve audio stream URL — tries Invidious first, then yt-dlp
+async function resolveAudioUrl(videoId, forceFresh = false) {
+  const cached = streamCache.get(videoId);
+  if (!forceFresh && cached && cached.expiresAt > Date.now()) return cached.url;
+
+  let streamUrl;
+  try {
+    streamUrl = await resolveViaInvidious(videoId);
+  } catch (e) {
+    console.log(`[${videoId}] Invidious failed, trying yt-dlp...`);
+    try {
+      streamUrl = await resolveViaYtDlp(videoId);
+      console.log(`[${videoId}] ✅ yt-dlp stream resolved`);
+    } catch (e2) {
+      console.error(`[${videoId}] Both Invidious and yt-dlp failed:`, e2.message);
+      throw new Error('Failed to extract audio stream');
+    }
+  }
+
+  streamCache.set(videoId, { url: streamUrl, expiresAt: Date.now() + 3 * 60 * 60 * 1000 });
+  return streamUrl;
 }
 
 // API: Search YouTube
