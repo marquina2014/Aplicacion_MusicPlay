@@ -1,481 +1,237 @@
-const express = require('express');
-const cors = require('cors');
-const path = require('path');
-const fs = require('fs');
-const os = require('os');
-const { execFile } = require('child_process');
+﻿const express  = require('express');
+const cors     = require('cors');
+const path     = require('path');
+const fs       = require('fs');
+const os       = require('os');
 const { Readable } = require('stream');
-const ytSearch = require('yt-search');
-const qrcode = require('qrcode-terminal');
+const qrcode   = require('qrcode-terminal');
 
-const app = express();
+const app  = express();
 const PORT = process.env.PORT || 3000;
 const DATA_FILE = path.join(__dirname, 'data', 'playlists.json');
 
-// Middleware
 app.use(cors());
 app.use(express.json());
-app.use((req, res, next) => {
-  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Expires', '0');
-  next();
-});
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Cache structures
-const streamCache = new Map(); // videoId -> { url: string, expiresAt: number }
-const searchCache = new Map(); // query -> { results: Array, expiresAt: number }
+// ─── Caches ──────────────────────────────────────────────────────────────────
+const streamCache = new Map(); // trackId -> { url, expiresAt }
+const searchCache = new Map(); // query   -> { results, expiresAt }
 
-// Helper: Ensure playlists file exists
+// ─── Playlists helpers ────────────────────────────────────────────────────────
 function getPlaylists() {
   try {
     if (!fs.existsSync(DATA_FILE)) {
-      const initial = [
-        {
-          id: 'favorites',
-          name: 'Tus me gusta',
-          description: 'Tus canciones favoritas guardadas',
-          isSystem: true,
-          cover: '',
-          createdAt: Date.now(),
-          tracks: []
-        }
-      ];
-      fs.writeFileSync(DATA_FILE, JSON.stringify(initial, null, 2), 'utf-8');
-      return initial;
+      const init = [{ id: 'favorites', name: 'Tus me gusta', description: 'Tus canciones favoritas', isSystem: true, cover: '', createdAt: Date.now(), tracks: [] }];
+      fs.writeFileSync(DATA_FILE, JSON.stringify(init, null, 2));
+      return init;
     }
-    const data = fs.readFileSync(DATA_FILE, 'utf-8');
-    return JSON.parse(data);
-  } catch (err) {
-    console.error('Error reading playlists:', err);
-    return [];
-  }
+    return JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8'));
+  } catch(e) { console.error('getPlaylists:', e); return []; }
+}
+function savePlaylists(pl) {
+  try { fs.writeFileSync(DATA_FILE, JSON.stringify(pl, null, 2)); return true; }
+  catch(e) { console.error('savePlaylists:', e); return false; }
 }
 
-function savePlaylists(playlists) {
-  try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(playlists, null, 2), 'utf-8');
-    return true;
-  } catch (err) {
-    console.error('Error saving playlists:', err);
-    return false;
-  }
+// ─── Utilities ────────────────────────────────────────────────────────────────
+function formatDuration(sec) {
+  if (!sec || isNaN(sec)) return '0:00';
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-// Helper: Get cookies file path if available (copies to /tmp to avoid read-only filesystem issues)
-function getCookiesPath() {
-  const TMP_COOKIES = '/tmp/yt_dlp_cookies.txt';
+const SC_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
-  function copyToTmp(sourcePath) {
-    try {
-      const content = fs.readFileSync(sourcePath, 'utf-8');
-      fs.writeFileSync(TMP_COOKIES, content, 'utf-8');
-      console.log(`🍪 Cookies copiadas desde ${sourcePath} → ${TMP_COOKIES}`);
-      return TMP_COOKIES;
-    } catch (e) {
-      console.warn(`Could not copy cookies from ${sourcePath}:`, e.message);
-      return null;
-    }
-  }
+// ─── SoundCloud client_id (auto-extracted from their website) ─────────────────
+let scClientId        = null;
+let scClientIdFetched = 0;
 
-  if (process.env.COOKIES_PATH && fs.existsSync(process.env.COOKIES_PATH)) {
-    return copyToTmp(process.env.COOKIES_PATH) || process.env.COOKIES_PATH;
-  }
-  const renderSecretPath = '/etc/secrets/cookies.txt';
-  if (fs.existsSync(renderSecretPath)) {
-    return copyToTmp(renderSecretPath) || renderSecretPath;
-  }
-  const localCookies = path.join(__dirname, 'cookies.txt');
-  if (fs.existsSync(localCookies)) {
-    return copyToTmp(localCookies) || localCookies;
-  }
-  if (process.env.YOUTUBE_COOKIES) {
+async function getSCClientId() {
+  if (scClientId && (Date.now() - scClientIdFetched) < 12 * 60 * 60 * 1000) return scClientId;
+
+  console.log('🔑 Fetching SoundCloud client_id...');
+  const homeRes = await fetch('https://soundcloud.com', { headers: { 'User-Agent': SC_UA } });
+  const html = await homeRes.text();
+
+  const scriptUrls = [...html.matchAll(/src="(https:\/\/a-v2\.sndcdn\.com\/assets\/[^"]+\.js)"/g)]
+    .map(m => m[1]).slice(-5);
+
+  for (const url of scriptUrls) {
     try {
-      let content = process.env.YOUTUBE_COOKIES.trim();
-      if (!content.includes('\t') && content.length > 50) {
-        try { content = Buffer.from(content, 'base64').toString('utf-8'); } catch (_) {}
+      const r = await fetch(url, { headers: { 'User-Agent': SC_UA } });
+      const txt = await r.text();
+      const m = txt.match(/client_id:"([a-zA-Z0-9]{32})"/);
+      if (m) {
+        scClientId = m[1];
+        scClientIdFetched = Date.now();
+        console.log(`✅ SoundCloud client_id: ${scClientId.slice(0,8)}...`);
+        return scClientId;
       }
-      fs.writeFileSync(TMP_COOKIES, content, 'utf-8');
-      return TMP_COOKIES;
-    } catch (e) {
-      console.warn('Could not write cookies from env:', e.message);
-    }
+    } catch(_) {}
   }
-  return null;
+  throw new Error('Could not obtain SoundCloud client_id');
 }
 
-// ── Cobalt API (primary source — works from datacenter IPs) ─────────────────
-async function resolveViaCobalt(videoId) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 20000);
-  try {
-    const res = await fetch('https://api.cobalt.tools/', {
-      method: 'POST',
-      headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        url: `https://www.youtube.com/watch?v=${videoId}`,
-        downloadMode: 'audio',
-        audioFormat: 'mp3',
-        audioBitrate: '128',
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
-    if (!res.ok) throw new Error(`Cobalt HTTP ${res.status}`);
-    const data = await res.json();
-    if (data.status === 'error') throw new Error(`Cobalt: ${JSON.stringify(data.error)}`);
-    if (!data.url) throw new Error('Cobalt: no URL in response');
-    console.log(`[${videoId}] ✅ Cobalt stream (${data.status})`);
-    return data.url;
-  } catch(e) {
-    clearTimeout(timer);
-    throw e;
-  }
+// ─── SoundCloud Search ────────────────────────────────────────────────────────
+async function scSearch(query, limit = 25) {
+  const cid = await getSCClientId();
+  const url = `https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(query)}&client_id=${cid}&limit=${limit}&offset=0&linked_partitioning=1`;
+  const res = await fetch(url, { headers: { 'User-Agent': SC_UA } });
+  if (!res.ok) throw new Error(`SC search HTTP ${res.status}`);
+  const data = await res.json();
+  return (data.collection || []).filter(t => t.streamable && t.title);
 }
 
-// Resolve audio URL via yt-dlp (fallback when Invidious fails)
-function resolveViaYtDlp(videoId) {
-  const cookiesPath = getCookiesPath();
-  const isWin = process.platform === 'win32';
-  const localBin = path.join(__dirname, isWin ? 'yt-dlp.exe' : 'yt-dlp');
-  const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-
-  function buildArgs(extraArgs = []) {
-    const args = ['--no-warnings', '--no-playlist', '-g',
-      '-f', '140/bestaudio[ext=m4a]/bestaudio/best', ...extraArgs];
-    if (cookiesPath) args.unshift('--cookies', cookiesPath);
-    args.push(videoUrl);
-    return args;
-  }
-
-  function run(cmd, args) {
-    return new Promise((res, rej) => {
-      execFile(cmd, args, { timeout: 30000 }, (error, stdout) => {
-        if (error) return rej(error);
-        const lines = stdout.trim().split('\n').filter(l => l.trim().startsWith('http'));
-        if (!lines.length) return rej(new Error('No URL in output'));
-        res(lines[0].trim());
-      });
-    });
-  }
-
-  function runWithArgs(extraArgs) {
-    const args = buildArgs(extraArgs);
-    if (fs.existsSync(localBin)) return run(localBin, args);
-    return run('python3', ['-m', 'yt_dlp', ...args])
-      .catch(() => run('python', ['-m', 'yt_dlp', ...args]));
-  }
-
-  const withClient = (c) => runWithArgs(['--extractor-args', `youtube:player_client=${c}`]);
-  return withClient('tv_embedded')
-    .catch(() => withClient('ios'))
-    .catch(() => withClient('mweb'))
-    .catch(() => withClient('web'))
-    .catch(() => runWithArgs([]));
-}
-
-// Helper: Resolve audio stream URL — tries Cobalt → yt-dlp
-async function resolveAudioUrl(videoId, forceFresh = false) {
-  const cached = streamCache.get(videoId);
+// ─── SoundCloud Stream URL ────────────────────────────────────────────────────
+async function scResolveStreamUrl(trackId, forceFresh = false) {
+  const cached = streamCache.get(trackId);
   if (!forceFresh && cached && cached.expiresAt > Date.now()) return cached.url;
 
-  let streamUrl;
+  const cid = await getSCClientId();
 
-  // 1. Cobalt API (works from datacenter IPs, actively maintained)
-  try {
-    streamUrl = await resolveViaCobalt(videoId);
-  } catch (e) {
-    console.log(`[${videoId}] Cobalt failed (${e.message}), trying yt-dlp...`);
-    // 2. yt-dlp last resort
-    try {
-      streamUrl = await resolveViaYtDlp(videoId);
-      console.log(`[${videoId}] ✅ yt-dlp stream resolved`);
-    } catch (e2) {
-      console.error(`[${videoId}] All sources failed:`, e2.message);
-      throw new Error('Failed to extract audio stream');
-    }
-  }
+  // Get track object (has media.transcodings)
+  const trackRes = await fetch(`https://api-v2.soundcloud.com/tracks/${trackId}?client_id=${cid}`, {
+    headers: { 'User-Agent': SC_UA }
+  });
+  if (!trackRes.ok) throw new Error(`SC track HTTP ${trackRes.status}`);
+  const track = await trackRes.json();
 
-  streamCache.set(videoId, { url: streamUrl, expiresAt: Date.now() + 3 * 60 * 60 * 1000 });
-  return streamUrl;
+  const transcodings = track.media?.transcodings || [];
+
+  // Prefer progressive MP3 → best for iOS native <audio>
+  const mp3prog = transcodings.find(t => t.format?.protocol === 'progressive' && t.format?.mime_type?.includes('mpeg'));
+  const anyProg = transcodings.find(t => t.format?.protocol === 'progressive');
+  const hls     = transcodings.find(t => t.format?.protocol === 'hls');
+  const chosen  = mp3prog || anyProg || hls;
+  if (!chosen) throw new Error('No streamable transcoding found');
+
+  // Resolve CDN URL
+  const streamRes = await fetch(`${chosen.url}?client_id=${cid}`, { headers: { 'User-Agent': SC_UA } });
+  if (!streamRes.ok) throw new Error(`SC stream resolve HTTP ${streamRes.status}`);
+  const { url: cdnUrl } = await streamRes.json();
+  if (!cdnUrl) throw new Error('No CDN URL returned');
+
+  // SoundCloud CDN URLs are valid ~1 hour; cache 55 min
+  streamCache.set(trackId, { url: cdnUrl, expiresAt: Date.now() + 55 * 60 * 1000 });
+  console.log(`[${trackId}] ✅ SoundCloud stream (${chosen.format?.protocol})`);
+  return cdnUrl;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// API Routes
+// ═══════════════════════════════════════════════════════════════════════════════
 
-// API: Search YouTube
+// Search
 app.get('/api/search', async (req, res) => {
   const query = (req.query.q || '').trim();
-  if (!query) {
-    return res.json({ tracks: [] });
-  }
+  if (!query) return res.json({ tracks: [] });
 
   const cached = searchCache.get(query.toLowerCase());
-  if (cached && cached.expiresAt > Date.now()) {
-    return res.json({ tracks: cached.results });
-  }
+  if (cached && cached.expiresAt > Date.now()) return res.json({ tracks: cached.results });
 
   try {
-    const result = await ytSearch(query);
-    const videos = (result && result.videos ? result.videos : []).slice(0, 25);
-
-    const tracks = videos.map(v => ({
-      id: v.videoId,
-      title: v.title,
-      artist: v.author ? v.author.name : 'YouTube Music',
-      thumbnail: v.thumbnail || `https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`,
-      duration: v.seconds || 0,
-      durationFormatted: v.timestamp || '0:00',
-      views: v.views
+    const scTracks = await scSearch(query);
+    const tracks = scTracks.map(t => ({
+      id:                String(t.id),
+      title:             t.title,
+      artist:            t.user?.username || 'Unknown',
+      thumbnail:         (t.artwork_url || t.user?.avatar_url || '').replace('-large', '-t500x500') || '/icons/icon-512.png',
+      duration:          Math.round((t.duration || 0) / 1000),
+      durationFormatted: formatDuration(Math.round((t.duration || 0) / 1000)),
     }));
 
-    searchCache.set(query.toLowerCase(), {
-      results: tracks,
-      expiresAt: Date.now() + 15 * 60 * 1000 // 15 min cache
-    });
-
-    res.json({ tracks });
-  } catch (err) {
-    console.error('Search error:', err);
-    res.status(500).json({ error: 'Error searching tracks', tracks: [] });
-  }
-});
-
-// API: Stream Audio (Supports iOS Range Requests)
-app.get('/api/stream/:id', async (req, res) => {
-  const videoId = req.params.id;
-  if (!videoId || !/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
-    return res.status(400).send('Invalid video ID');
-  }
-
-  async function attemptStream(retry = false) {
-    try {
-      const streamUrl = await resolveAudioUrl(videoId, retry);
-
-      const requestHeaders = {
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
-      };
-
-      if (req.headers.range) {
-        requestHeaders['Range'] = req.headers.range;
-      }
-
-      const controller = new AbortController();
-      req.on('close', () => controller.abort());
-
-      const ytResponse = await fetch(streamUrl, {
-        headers: requestHeaders,
-        signal: controller.signal
-      });
-
-      if (!ytResponse.ok) {
-        // If 403 Forbidden, stream URL expired, retry once with fresh URL
-        if (ytResponse.status === 403 && !retry) {
-          console.log(`Stream 403 for ${videoId}, retrying with fresh URL...`);
-          streamCache.delete(videoId);
-          return attemptStream(true);
-        }
-        return res.status(ytResponse.status).send('Upstream stream error');
-      }
-
-      // Forward headers necessary for iOS Safari seeking and background play
-      res.status(ytResponse.status);
-      res.setHeader('Accept-Ranges', 'bytes');
-      res.setHeader('Content-Type', ytResponse.headers.get('content-type') || 'audio/mp4');
-
-      const contentRange = ytResponse.headers.get('content-range');
-      if (contentRange) res.setHeader('Content-Range', contentRange);
-
-      const contentLength = ytResponse.headers.get('content-length');
-      if (contentLength) res.setHeader('Content-Length', contentLength);
-
-      res.setHeader('Cache-Control', 'public, max-age=3600');
-
-      if (ytResponse.body) {
-        Readable.fromWeb(ytResponse.body).pipe(res);
-      } else {
-        res.end();
-      }
-    } catch (err) {
-      if (err.name === 'AbortError') return;
-      console.error(`Streaming error for ${videoId}:`, err.message);
-      if (!res.headersSent) {
-        res.status(500).send('Error streaming audio');
-      }
+    searchCache.set(query.toLowerCase(), { results: tracks, expiresAt: Date.now() + 15 * 60 * 1000 });
+    return res.json({ tracks });
+  } catch(err) {
+    console.error('Search error:', err.message);
+    // If client_id expired, reset and let client retry
+    if (err.message.includes('401') || err.message.includes('client_id')) {
+      scClientId = null;
     }
+    return res.status(500).json({ error: 'Error searching tracks', tracks: [] });
   }
-
-  await attemptStream();
 });
 
-// API: Track Info (useful for direct links / IDs)
-app.get('/api/info/:id', async (req, res) => {
-  const videoId = req.params.id;
+// Stream — resolves SoundCloud CDN URL and redirects (no proxying = faster + iOS loves it)
+app.get('/api/stream/:id', async (req, res) => {
+  const trackId = req.params.id;
+  if (!trackId || !/^\d+$/.test(trackId)) return res.status(400).send('Invalid track ID');
+
   try {
-    const result = await ytSearch({ videoId });
-    if (!result) return res.status(404).json({ error: 'Track not found' });
-
-    res.json({
-      id: result.videoId,
-      title: result.title,
-      artist: result.author ? result.author.name : 'YouTube Music',
-      thumbnail: result.thumbnail || `https://i.ytimg.com/vi/${result.videoId}/hqdefault.jpg`,
-      duration: result.seconds || 0,
-      durationFormatted: result.timestamp || '0:00'
-    });
-  } catch (err) {
-    console.error('Info error:', err);
-    res.status(500).json({ error: 'Error fetching track info' });
+    const cdnUrl = await scResolveStreamUrl(trackId);
+    // 302 redirect: the browser <audio> element follows this and plays directly from SC CDN
+    return res.redirect(302, cdnUrl);
+  } catch(err) {
+    console.error(`Stream error [${trackId}]:`, err.message);
+    if (err.message.includes('401') || err.message.includes('client_id')) scClientId = null;
+    if (!res.headersSent) res.status(500).send('Stream unavailable');
   }
 });
 
-// API: Playlists CRUD
-app.get('/api/playlists', (req, res) => {
-  res.json(getPlaylists());
-});
+// Playlist CRUD ─────────────────────────────────────────────────────────────────
+app.get('/api/playlists', (req, res) => res.json(getPlaylists()));
 
 app.post('/api/playlists', (req, res) => {
   const { name, description } = req.body;
-  if (!name || !name.trim()) {
-    return res.status(400).json({ error: 'Name is required' });
-  }
-
+  if (!name?.trim()) return res.status(400).json({ error: 'Name is required' });
   const playlists = getPlaylists();
-  const newPlaylist = {
-    id: 'pl_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
-    name: name.trim(),
-    description: (description || '').trim(),
-    isSystem: false,
-    cover: '',
-    createdAt: Date.now(),
-    tracks: []
-  };
-
-  playlists.push(newPlaylist);
+  const pl = { id: 'pl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7), name: name.trim(), description: (description || '').trim(), isSystem: false, cover: '', createdAt: Date.now(), tracks: [] };
+  playlists.push(pl);
   savePlaylists(playlists);
-  res.status(201).json(newPlaylist);
+  res.status(201).json(pl);
 });
 
 app.delete('/api/playlists/:id', (req, res) => {
-  const { id } = req.params;
   const playlists = getPlaylists();
-  const target = playlists.find(p => p.id === id);
-
-  if (!target) {
-    return res.status(404).json({ error: 'Playlist not found' });
-  }
-  if (target.isSystem) {
-    return res.status(400).json({ error: 'Cannot delete system playlist' });
-  }
-
-  const filtered = playlists.filter(p => p.id !== id);
-  savePlaylists(filtered);
+  const target = playlists.find(p => p.id === req.params.id);
+  if (!target) return res.status(404).json({ error: 'Not found' });
+  if (target.isSystem) return res.status(400).json({ error: 'Cannot delete system playlist' });
+  savePlaylists(playlists.filter(p => p.id !== req.params.id));
   res.json({ success: true });
 });
 
-// API: Add track to playlist
 app.post('/api/playlists/:id/tracks', (req, res) => {
-  const { id } = req.params;
   const track = req.body;
-
-  if (!track || !track.id) {
-    return res.status(400).json({ error: 'Invalid track data' });
-  }
-
+  if (!track?.id) return res.status(400).json({ error: 'Invalid track' });
   const playlists = getPlaylists();
-  const playlist = playlists.find(p => p.id === id);
-
-  if (!playlist) {
-    return res.status(404).json({ error: 'Playlist not found' });
-  }
-
-  // Prevent duplicate track addition if already exists
-  const exists = playlist.tracks.some(t => t.id === track.id);
-  if (!exists) {
-    playlist.tracks.push({
-      id: track.id,
-      title: track.title,
-      artist: track.artist,
-      thumbnail: track.thumbnail,
-      duration: track.duration,
-      durationFormatted: track.durationFormatted,
-      addedAt: Date.now()
-    });
-    // Set playlist cover to first track's thumbnail if empty
-    if (!playlist.cover && track.thumbnail) {
-      playlist.cover = track.thumbnail;
-    }
+  const pl = playlists.find(p => p.id === req.params.id);
+  if (!pl) return res.status(404).json({ error: 'Playlist not found' });
+  if (!pl.tracks.some(t => t.id === track.id)) {
+    pl.tracks.push({ id: track.id, title: track.title, artist: track.artist, thumbnail: track.thumbnail, duration: track.duration, durationFormatted: track.durationFormatted, addedAt: Date.now() });
+    if (!pl.cover && track.thumbnail) pl.cover = track.thumbnail;
     savePlaylists(playlists);
   }
-
-  res.json(playlist);
+  res.json(pl);
 });
 
-// API: Remove track from playlist
 app.delete('/api/playlists/:id/tracks/:trackId', (req, res) => {
-  const { id, trackId } = req.params;
   const playlists = getPlaylists();
-  const playlist = playlists.find(p => p.id === id);
-
-  if (!playlist) {
-    return res.status(404).json({ error: 'Playlist not found' });
-  }
-
-  playlist.tracks = playlist.tracks.filter(t => t.id !== trackId);
+  const pl = playlists.find(p => p.id === req.params.id);
+  if (!pl) return res.status(404).json({ error: 'Playlist not found' });
+  pl.tracks = pl.tracks.filter(t => t.id !== req.params.trackId);
   savePlaylists(playlists);
-  res.json(playlist);
+  res.json(pl);
 });
 
-// Helper to get local network IP
-function getLocalIp() {
-  const interfaces = os.networkInterfaces();
-  for (const name of Object.keys(interfaces)) {
-    for (const iface of interfaces[name]) {
-      if (iface.family === 'IPv4' && !iface.internal) {
-        return iface.address;
-      }
-    }
-  }
-  return 'localhost';
-}
+// SPA fallback
+app.use((req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
-// Fallback for SPA routing
-app.use((req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
-// Start Server
+// Start
 app.listen(PORT, '0.0.0.0', () => {
-  const localIp = getLocalIp();
-  const networkUrl = `http://${localIp}:${PORT}`;
-  const localUrl = `http://localhost:${PORT}`;
-
+  const localIp = (() => {
+    for (const ifaces of Object.values(os.networkInterfaces()))
+      for (const i of ifaces) if (i.family === 'IPv4' && !i.internal) return i.address;
+    return 'localhost';
+  })();
   console.log('\n' + '='.repeat(50));
-  console.log('🎵 SPOTIFY WEB CLONE (YOUTUBE BACKGROUND AUDIO) 🎵');
+  console.log('🎵 MusicPlay — SoundCloud Audio Engine 🎵');
   console.log('='.repeat(50));
-  console.log(`\n💻 En tu computadora: ${localUrl}`);
-  console.log(`📱 En tu iPhone (misma Wi-Fi): ${networkUrl}\n`);
-  console.log('Escanea este código QR con la cámara de tu iPhone:');
-
-  try {
-    qrcode.generate(networkUrl, { small: true });
-  } catch (e) {
-    console.log('QR Code could not be generated in terminal.');
-  }
-
-  const cookiesFound = getCookiesPath();
-  if (cookiesFound) {
-    console.log(`🍪 Cookies de YouTube activas: ${cookiesFound}`);
-  } else {
-    console.log('ℹ️ Sin archivo de cookies. (En Render: configurar Secret File "cookies.txt")');
-  }
-
-  const isWin = process.platform === 'win32';
-  const localBin = path.join(__dirname, isWin ? 'yt-dlp.exe' : 'yt-dlp');
-  if (fs.existsSync(localBin)) {
-    console.log(`⚡ Binario de yt-dlp local detectado: ${localBin}`);
-  } else {
-    console.log('⚡ yt-dlp: usando binario del sistema o python.');
-  }
-
+  console.log(`💻 Local:   http://localhost:${PORT}`);
+  console.log(`📱 iPhone:  http://${localIp}:${PORT}`);
+  try { qrcode.generate(`http://${localIp}:${PORT}`, { small: true }); } catch(_) {}
   console.log('='.repeat(50) + '\n');
+  // Pre-fetch client_id at startup
+  getSCClientId().catch(e => console.warn('SC client_id pre-fetch failed:', e.message));
 });
