@@ -1,4 +1,4 @@
-﻿const express  = require('express');
+const express  = require('express');
 const cors     = require('cors');
 const path     = require('path');
 const fs       = require('fs');
@@ -154,14 +154,35 @@ app.get('/api/search', async (req, res) => {
   }
 });
 
-// Stream — resolves SoundCloud CDN URL and redirects (no proxying = faster + iOS loves it)
+// Stream — resolves SoundCloud CDN URL and redirects (or proxies for cache if needed)
 app.get('/api/stream/:id', async (req, res) => {
   const trackId = req.params.id;
   if (!trackId || !/^\d+$/.test(trackId)) return res.status(400).send('Invalid track ID');
 
   try {
     const cdnUrl = await scResolveStreamUrl(trackId);
-    // 302 redirect: the browser <audio> element follows this and plays directly from SC CDN
+
+    // If client specifically requests proxy streaming / download
+    if (req.query.proxy === '1') {
+      const audioRes = await fetch(cdnUrl, {
+        headers: { 'User-Agent': SC_UA }
+      });
+      if (!audioRes.ok) return res.status(audioRes.status).send('Upstream error');
+      res.setHeader('Content-Type', audioRes.headers.get('content-type') || 'audio/mpeg');
+      const cl = audioRes.headers.get('content-length');
+      if (cl) res.setHeader('Content-Length', cl);
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      if (audioRes.body) {
+        Readable.fromWeb(audioRes.body).pipe(res);
+      } else {
+        res.end();
+      }
+      return;
+    }
+
+    res.setHeader('Access-Control-Allow-Origin', '*');
     return res.redirect(302, cdnUrl);
   } catch(err) {
     console.error(`Stream error [${trackId}]:`, err.message);

@@ -1102,3 +1102,111 @@ body {
     text-align: center;
   }
 }
+/* Offline Banner */
+#offline-banner {
+  display: none;
+  background: #d35400;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  padding: 7px 14px;
+  position: sticky;
+  top: 0;
+  z-index: 150;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+#offline-banner.show {
+  display: flex;
+}
+
+/* Offline Cache Badges & Buttons */
+.track-cache-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  margin-right: 4px;
+}
+.track-cache-badge {
+  color: var(--primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.track-download-btn {
+  color: var(--text-subdued);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, transform 0.1s;
+}
+.track-download-btn:active {
+  color: #ffffff;
+  transform: scale(0.9);
+}
+.track-download-btn.downloading {
+  pointer-events: none;
+  color: var(--primary);
+}
+.cache-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255,255,255,0.2);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+#player-download-btn.cached {
+  color: var(--primary);
+}
+
+/* Offline Library Card */
+.offline-library-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  background: linear-gradient(135deg, #162438 0%, #121824 100%);
+  border: 1px solid rgba(56, 139, 253, 0.35);
+  border-radius: 12px;
+  padding: 16px 18px;
+  margin-bottom: 14px;
+  cursor: pointer;
+  transition: transform 0.15s, background 0.2s;
+}
+.offline-library-card:active {
+  transform: scale(0.98);
+  background: linear-gradient(135deg, #1e314d 0%, #17202f 100%);
+}
+.offline-card-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(56, 139, 253, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: #58a6ff;
+}
+.offline-card-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #ffffff;
+}
+.offline-card-desc {
+  font-size: 12px;
+  color: var(--text-subdued);
+  margin-top: 3px;
+}

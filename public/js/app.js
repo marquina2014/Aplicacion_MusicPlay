@@ -43,6 +43,8 @@ class SpotifyApp {
     this.bindEvents();
     this.bindAuthEvents();
     this.setupPlayerListeners();
+    this.setupNetworkStatusListeners();
+    this.setupCacheListeners();
     this.registerServiceWorker();
 
     // Check existing Supabase session
@@ -75,6 +77,68 @@ class SpotifyApp {
         console.warn('SW registration failed:', err);
       });
     }
+  }
+
+  setupNetworkStatusListeners() {
+    const banner = document.getElementById('offline-banner');
+    const updateStatus = () => {
+      const isOffline = !navigator.onLine;
+      if (banner) {
+        banner.classList.toggle('show', isOffline);
+      }
+      if (isOffline) {
+        showToast('Modo sin conexión: Reproduciendo desde la memoria caché');
+      } else {
+        showToast('Conexión restaurada');
+      }
+    };
+
+    window.addEventListener('online', updateStatus);
+    window.addEventListener('offline', updateStatus);
+    if (!navigator.onLine && banner) {
+      banner.classList.add('show');
+    }
+  }
+
+  setupCacheListeners() {
+    if (!window.audioCache) return;
+
+    window.audioCache.on('track-cached', ({ trackId }) => {
+      this.updateTrackItemCacheBadges(trackId);
+      if (this.player.currentTrack && String(this.player.currentTrack.id) === String(trackId)) {
+        this.updatePlayerDownloadButton(trackId, true);
+      }
+      if (this.currentView === 'library') {
+        this.renderLibrary();
+      }
+    });
+
+    window.audioCache.on('track-deleted', ({ trackId }) => {
+      this.updateTrackItemCacheBadges(trackId);
+      if (this.player.currentTrack && String(this.player.currentTrack.id) === String(trackId)) {
+        this.updatePlayerDownloadButton(trackId, false);
+      }
+      if (this.currentView === 'library') {
+        this.renderLibrary();
+      }
+    });
+
+    window.audioCache.on('cache-cleared', () => {
+      this.updateTrackItemCacheBadges();
+      if (this.player.currentTrack) {
+        this.updatePlayerDownloadButton(this.player.currentTrack.id, false);
+      }
+      if (this.currentView === 'library') {
+        this.renderLibrary();
+      }
+    });
+
+    window.audioCache.on('download-start', ({ trackId }) => {
+      this.updateTrackItemCacheBadges(trackId);
+      if (this.player.currentTrack && String(this.player.currentTrack.id) === String(trackId)) {
+        this.updatePlayerDownloadButton(trackId, 'downloading');
+      }
+    });
   }
 
   // -------------------------------------------------------------
@@ -951,6 +1015,30 @@ class SpotifyApp {
       }
     });
 
+    // Offline cache download button in full player
+    document.getElementById('player-download-btn')?.addEventListener('click', async () => {
+      if (!this.player.currentTrack || !window.audioCache) return;
+      const track = this.player.currentTrack;
+      const isCached = await window.audioCache.isCached(track.id);
+      if (isCached) {
+        await window.audioCache.deleteTrack(track.id);
+        showToast('Canción eliminada de la memoria caché');
+        this.updatePlayerDownloadButton(track.id, false);
+      } else {
+        showToast('Guardando en caché offline...');
+        this.updatePlayerDownloadButton(track.id, 'downloading');
+        const ok = await window.audioCache.cacheTrack(track);
+        if (ok) {
+          showToast('Canción guardada en caché para escuchar sin conexión ✅');
+          this.updatePlayerDownloadButton(track.id, true);
+        } else {
+          showToast('No se pudo guardar la canción');
+          this.updatePlayerDownloadButton(track.id, false);
+        }
+      }
+      this.updateTrackItemCacheBadges(track.id);
+    });
+
     // Scrub Bar Interaction (Mouse & Touch)
     const scrubTrack = document.getElementById('scrub-track');
     const updateScrubPos = (clientX) => {
@@ -1148,6 +1236,18 @@ class SpotifyApp {
         if (timeTotal) timeTotal.textContent = formatTime(duration);
       }
     });
+
+    this.player.on('cachedstatus', ({ trackId, isCached, offlineFallback }) => {
+      this.updatePlayerDownloadButton(trackId, isCached);
+      this.updateTrackItemCacheBadges(trackId);
+      if (offlineFallback) {
+        showToast('Conexión perdida: Continuando desde la memoria caché ✅');
+      }
+    });
+
+    this.player.on('playback-resumed-offline', () => {
+      showToast('Reproduciendo desde la memoria caché');
+    });
   }
 
   switchView(viewName) {
@@ -1198,6 +1298,48 @@ class SpotifyApp {
     document.getElementById('player-artist').textContent = track.artist;
 
     this.updateLikeButton(track.id);
+    this.updatePlayerDownloadButton(track.id);
+  }
+
+  async updatePlayerDownloadButton(trackId, statusOverride = null) {
+    const btn = document.getElementById('player-download-btn');
+    if (!btn || !trackId) return;
+
+    let isCached = false;
+    let isDownloading = false;
+
+    if (statusOverride === 'downloading') {
+      isDownloading = true;
+    } else if (typeof statusOverride === 'boolean') {
+      isCached = statusOverride;
+    } else if (window.audioCache) {
+      isDownloading = window.audioCache.isDownloading(trackId);
+      if (!isDownloading) {
+        isCached = await window.audioCache.isCached(trackId);
+      }
+    }
+
+    if (isDownloading) {
+      btn.innerHTML = `<span class="cache-spinner" style="width:18px;height:18px;"></span>`;
+      btn.title = "Descargando a caché offline...";
+      btn.classList.remove('cached');
+    } else if (isCached) {
+      btn.innerHTML = `
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="#1db954">
+          <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+        </svg>
+      `;
+      btn.title = "Guardada en caché (Toca para eliminar)";
+      btn.classList.add('cached');
+    } else {
+      btn.innerHTML = `
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/>
+        </svg>
+      `;
+      btn.title = "Guardar en caché offline";
+      btn.classList.remove('cached');
+    }
   }
 
   updateLikeButton(trackId) {
@@ -1302,6 +1444,7 @@ class SpotifyApp {
         </div>
         <div class="track-duration">${track.durationFormatted || track.duration_formatted || '0:00'}</div>
         <div class="track-actions">
+          <div class="track-cache-status" data-track-id="${track.id}"></div>
           <button class="icon-btn track-like-btn" title="Me gusta">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="${this.isTrackLiked(track.id) ? '#1db954' : 'none'}" stroke="${this.isTrackLiked(track.id) ? '#1db954' : 'currentColor'}" stroke-width="2">
               <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
@@ -1353,10 +1496,68 @@ class SpotifyApp {
         });
       }
 
+      // Render cache status badge / download button
+      const cacheStatusEl = item.querySelector('.track-cache-status');
+      if (cacheStatusEl) {
+        this.renderTrackCacheBadge(track, cacheStatusEl);
+      }
+
       listWrap.appendChild(item);
     });
 
     container.appendChild(listWrap);
+  }
+
+  async renderTrackCacheBadge(track, container) {
+    if (!container || !track || !track.id || !window.audioCache) return;
+    const strId = String(track.id);
+    const isDownloading = window.audioCache.isDownloading(strId);
+    const isCached = !isDownloading && await window.audioCache.isCached(strId);
+
+    if (isDownloading) {
+      container.innerHTML = `<span class="cache-spinner" title="Descargando a caché..."></span>`;
+    } else if (isCached) {
+      container.innerHTML = `
+        <span class="track-cache-badge" title="Guardada en caché offline">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="#1db954">
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+          </svg>
+        </span>
+      `;
+    } else {
+      container.innerHTML = `
+        <button class="track-download-btn" title="Descargar a caché">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/>
+          </svg>
+        </button>
+      `;
+
+      container.querySelector('.track-download-btn')?.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        showToast(`Guardando "${track.title}" en caché...`);
+        container.innerHTML = `<span class="cache-spinner"></span>`;
+        const ok = await window.audioCache.cacheTrack(track);
+        if (ok) {
+          showToast(`"${track.title}" guardada en caché ✅`);
+        } else {
+          showToast('Error al descargar');
+        }
+        this.renderTrackCacheBadge(track, container);
+      });
+    }
+  }
+
+  updateTrackItemCacheBadges(specificTrackId = null) {
+    const selector = specificTrackId
+      ? `.track-cache-status[data-track-id="${specificTrackId}"]`
+      : '.track-cache-status';
+
+    document.querySelectorAll(selector).forEach(async (el) => {
+      const id = el.dataset.trackId;
+      if (!id) return;
+      await this.renderTrackCacheBadge({ id }, el);
+    });
   }
 
   // Home Screen rendering
@@ -1438,6 +1639,35 @@ class SpotifyApp {
       grid.appendChild(banner);
     }
 
+    // Offline Cache Smart Card
+    const offlineCard = document.createElement('div');
+    offlineCard.className = 'offline-library-card';
+    offlineCard.innerHTML = `
+      <div style="display:flex; align-items:center; gap:14px;">
+        <div class="offline-card-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/>
+          </svg>
+        </div>
+        <div>
+          <div class="offline-card-title">Canciones en caché / Offline</div>
+          <div class="offline-card-desc" id="offline-card-desc">Cargando canciones guardadas...</div>
+        </div>
+      </div>
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="#58a6ff">
+        <path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z"/>
+      </svg>
+    `;
+    offlineCard.addEventListener('click', () => this.openOfflinePlaylist());
+    grid.appendChild(offlineCard);
+
+    if (window.audioCache) {
+      window.audioCache.getCacheStats().then(stats => {
+        const desc = offlineCard.querySelector('#offline-card-desc');
+        if (desc) desc.textContent = `${stats.count} canciones • ${stats.formatted} usados`;
+      });
+    }
+
     this.playlists.forEach(pl => {
       const card = document.createElement('div');
       card.className = 'playlist-card';
@@ -1459,6 +1689,60 @@ class SpotifyApp {
     });
   }
 
+  async openOfflinePlaylist() {
+    if (!window.audioCache) return;
+    const stats = await window.audioCache.getCacheStats();
+
+    const offlinePl = {
+      id: 'offline_cache',
+      name: 'Canciones en caché',
+      description: `${stats.count} canciones guardadas • ${stats.formatted} de almacenamiento`,
+      isSystem: true,
+      systemType: 'offline_cache',
+      cover: '/icons/icon-512.png',
+      tracks: stats.tracks.map(t => ({
+        id: t.id,
+        title: t.title,
+        artist: t.artist,
+        thumbnail: t.thumbnail || '/icons/icon-512.png',
+        duration: t.duration || 0,
+        durationFormatted: t.durationFormatted || '0:00'
+      }))
+    };
+
+    this.activePlaylist = offlinePl;
+    document.getElementById('playlist-hero-title').textContent = offlinePl.name;
+    document.getElementById('playlist-hero-desc').textContent = offlinePl.description;
+    document.getElementById('playlist-hero-cover').src = offlinePl.cover;
+
+    const addTracksBtn = document.getElementById('playlist-add-tracks-btn');
+    if (addTracksBtn) {
+      addTracksBtn.style.display = 'none';
+    }
+
+    const container = document.getElementById('playlist-tracks-container');
+    if (offlinePl.tracks.length > 0) {
+      this.renderTrackList(offlinePl.tracks, container, offlinePl.tracks, offlinePl);
+    } else {
+      container.innerHTML = '<p style="text-align:center; color:#b3b3b3; margin-top:24px;">No tienes canciones guardadas en caché todavía.<br>Las canciones que escuches o descargues se guardarán aquí automáticamente para sonar sin internet ni WiFi.</p>';
+    }
+
+    const delBtn = document.getElementById('playlist-delete-btn');
+    if (delBtn) {
+      delBtn.style.display = offlinePl.tracks.length > 0 ? 'block' : 'none';
+      delBtn.title = 'Vaciar memoria caché';
+      delBtn.onclick = async () => {
+        if (confirm('¿Deseas vaciar la memoria caché y eliminar todas las canciones descargadas de tu dispositivo?')) {
+          await window.audioCache.clearAll();
+          showToast('Memoria caché vaciada');
+          this.openOfflinePlaylist();
+        }
+      };
+    }
+
+    this.switchView('playlist-detail');
+  }
+
   // Open Playlist Detail View
   openPlaylist(playlist) {
     if (!playlist) return;
@@ -1470,6 +1754,11 @@ class SpotifyApp {
     const coverImg = document.getElementById('playlist-hero-cover');
     coverImg.src = playlist.cover || (playlist.isSystem ? 'https://misc.scdn.co/liked-songs/liked-songs-300.png' : '/icons/icon-512.png');
 
+    const addTracksBtn = document.getElementById('playlist-add-tracks-btn');
+    if (addTracksBtn) {
+      addTracksBtn.style.display = 'flex';
+    }
+
     const container = document.getElementById('playlist-tracks-container');
     if (playlist.tracks && playlist.tracks.length > 0) {
       this.renderTrackList(playlist.tracks, container, playlist.tracks, playlist);
@@ -1480,6 +1769,7 @@ class SpotifyApp {
     // Toggle delete playlist button visibility
     const delBtn = document.getElementById('playlist-delete-btn');
     if (delBtn) {
+      delBtn.onclick = null;
       delBtn.style.display = (!playlist.isSystem && playlist.id !== 'favorites') ? 'block' : 'none';
     }
 

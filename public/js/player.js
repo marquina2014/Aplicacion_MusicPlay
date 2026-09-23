@@ -1,9 +1,10 @@
 ﻿/**
- * MusicPlay Player - Native Audio
- * Uses HTML5 <audio> with /api/stream/:id (proxied via server).
- * Supports iOS background playback via MediaSession API.
- * Native <audio> is the ONLY reliable way to get background audio on iOS Safari.
+ * MusicPlay Player - Native Audio with Offline Cache Support
+ * Uses HTML5 <audio> with IndexedDB offline caching and /api/stream/:id.
+ * Supports iOS Safari background playback via MediaSession API.
+ * Automatically saves songs to cache and recovers seamlessly if WiFi/data drops.
  */
+
 class SpotifyPlayer {
   constructor() {
     this.audio = new Audio();
@@ -12,13 +13,15 @@ class SpotifyPlayer {
     this.audio.setAttribute('webkit-playsinline', 'true');
 
     this.currentTrack = null;
-    this.queue        = [];
-    this.queueIndex   = -1;
-    this.isPlaying    = false;
-    this.isLoading    = false;
-    this.isShuffle    = false;
-    this.repeatMode   = 'off'; // 'off' | 'all' | 'one'
-    this.listeners    = new Map();
+    this.queue = [];
+    this.queueIndex = -1;
+    this.isPlaying = false;
+    this.isLoading = false;
+    this.isShuffle = false;
+    this.repeatMode = 'off'; // 'off' | 'all' | 'one'
+    this.listeners = new Map();
+    this.currentBlobUrl = null;
+    this.isCurrentLocallyCached = false;
 
     this._setupAudioEvents();
     this._setupMediaSession();
@@ -28,8 +31,11 @@ class SpotifyPlayer {
     if (!this.listeners.has(event)) this.listeners.set(event, []);
     this.listeners.get(event).push(cb);
   }
+
   emit(event, data) {
-    (this.listeners.get(event) || []).forEach(cb => { try { cb(data); } catch(e) {} });
+    (this.listeners.get(event) || []).forEach(cb => {
+      try { cb(data); } catch(e) {}
+    });
   }
 
   _setupAudioEvents() {
@@ -47,8 +53,15 @@ class SpotifyPlayer {
       this.emit('pause');
     });
 
-    a.addEventListener('waiting',  () => { this.isLoading = true;  this.emit('loading', true);  });
-    a.addEventListener('canplay',  () => { this.isLoading = false; this.emit('loading', false); });
+    a.addEventListener('waiting', () => {
+      this.isLoading = true;
+      this.emit('loading', true);
+    });
+
+    a.addEventListener('canplay', () => {
+      this.isLoading = false;
+      this.emit('loading', false);
+    });
 
     a.addEventListener('playing', () => {
       this.isLoading = false;
@@ -60,8 +73,8 @@ class SpotifyPlayer {
 
     a.addEventListener('timeupdate', () => {
       const currentTime = a.currentTime || 0;
-      const duration    = a.duration || (this.currentTrack ? this.currentTrack.duration : 0) || 0;
-      const progress    = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
+      const duration = a.duration || (this.currentTrack ? this.currentTrack.duration : 0) || 0;
+      const progress = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
       this.emit('timeupdate', { currentTime, duration, progress });
       this._updatePosition();
     });
@@ -76,35 +89,74 @@ class SpotifyPlayer {
       }
     });
 
-    a.addEventListener('error', (e) => {
-      console.error('Audio error:', e, a.error);
+    // Offline resilience: if audio stream errors out (e.g. WiFi dropped mid-song),
+    // attempt to seamlessly switch to the locally cached Blob!
+    a.addEventListener('error', async (e) => {
+      console.warn('Audio stream error encountered:', a.error);
+
+      if (this.currentTrack && window.audioCache) {
+        try {
+          const cached = await window.audioCache.getTrack(this.currentTrack.id);
+          if (cached && cached.blob && !this.isCurrentLocallyCached) {
+            const resumePos = a.currentTime || 0;
+            console.log([Player] Conexión perdida, recuperando reproducción desde caché local en s);
+            
+            if (this.currentBlobUrl) {
+              URL.revokeObjectURL(this.currentBlobUrl);
+            }
+            this.currentBlobUrl = URL.createObjectURL(cached.blob);
+            this.isCurrentLocallyCached = true;
+            a.src = this.currentBlobUrl;
+            a.currentTime = resumePos;
+            
+            a.play().then(() => {
+              this.isPlaying = true;
+              this.isLoading = false;
+              this.emit('loading', false);
+              this.emit('cachedstatus', { trackId: this.currentTrack.id, isCached: true, offlineFallback: true });
+            }).catch(console.error);
+            return;
+          }
+        } catch (err) {
+          console.error('Error recovering from cache:', err);
+        }
+      }
+
       this.isLoading = false;
       this.isPlaying = false;
       this.emit('loading', false);
-      this.emit('error', 'Error al reproducir. Intenta con otra cancion.');
+      this.emit('error', 'Error al reproducir. Revisa tu conexión.');
     });
   }
 
   _setupMediaSession() {
     if (!('mediaSession' in navigator)) return;
     try {
-      navigator.mediaSession.setActionHandler('play',          () => this.play());
-      navigator.mediaSession.setActionHandler('pause',         () => this.pause());
+      navigator.mediaSession.setActionHandler('play', () => this.play());
+      navigator.mediaSession.setActionHandler('pause', () => this.pause());
       navigator.mediaSession.setActionHandler('previoustrack', () => this.previous());
-      navigator.mediaSession.setActionHandler('nexttrack',     () => this.next());
-      navigator.mediaSession.setActionHandler('seekto', (d) => { if (d.seekTime != null) this.seek(d.seekTime); });
-      navigator.mediaSession.setActionHandler('seekbackward', (d) => this.seek((this.audio.currentTime || 0) - (d.seekOffset || 10)));
-      navigator.mediaSession.setActionHandler('seekforward',  (d) => this.seek((this.audio.currentTime || 0) + (d.seekOffset || 10)));
-    } catch(e) { console.warn('MediaSession:', e); }
+      navigator.mediaSession.setActionHandler('nexttrack', () => this.next());
+      navigator.mediaSession.setActionHandler('seekto', (d) => {
+        if (d.seekTime != null) this.seek(d.seekTime);
+      });
+      navigator.mediaSession.setActionHandler('seekbackward', (d) => {
+        this.seek((this.audio.currentTime || 0) - (d.seekOffset || 10));
+      });
+      navigator.mediaSession.setActionHandler('seekforward', (d) => {
+        this.seek((this.audio.currentTime || 0) + (d.seekOffset || 10));
+      });
+    } catch(e) {
+      console.warn('MediaSession handler warning:', e);
+    }
   }
 
   _updateMetadata(track) {
     if (!('mediaSession' in navigator) || !track) return;
     const thumb = track.thumbnail || '/icons/icon-512.png';
     navigator.mediaSession.metadata = new MediaMetadata({
-      title:   track.title,
-      artist:  track.artist || 'YouTube Music',
-      album:   'MusicPlay',
+      title: track.title,
+      artist: track.artist || 'Música',
+      album: 'MusicPlay',
       artwork: [
         { src: thumb, sizes: '192x192', type: 'image/jpeg' },
         { src: thumb, sizes: '512x512', type: 'image/jpeg' },
@@ -122,20 +174,20 @@ class SpotifyPlayer {
       const dur = this.audio.duration;
       if (dur && !isNaN(dur) && !isNaN(this.audio.currentTime)) {
         navigator.mediaSession.setPositionState({
-          duration:     dur,
+          duration: dur,
           playbackRate: this.audio.playbackRate || 1,
-          position:     Math.min(dur, Math.max(0, this.audio.currentTime))
+          position: Math.min(dur, Math.max(0, this.audio.currentTime))
         });
       }
     } catch(e) {}
   }
 
-  loadAndPlay(track, queue = [], index = 0) {
+  async loadAndPlay(track, queue = [], index = 0) {
     if (!track || !track.id) return;
 
     this.currentTrack = track;
-    this.queue        = queue.length ? [...queue] : [track];
-    this.queueIndex   = queue.length ? index : 0;
+    this.queue = queue.length ? [...queue] : [track];
+    this.queueIndex = queue.length ? index : 0;
 
     this.isLoading = true;
     this.isPlaying = true;
@@ -143,19 +195,75 @@ class SpotifyPlayer {
     this.emit('trackchange', this.currentTrack);
     this._updateMetadata(track);
 
-    // Cache-bust so Render doesnt serve a stale error response
-    this.audio.src = `/api/stream/${track.id}?t=${Date.now()}`;
+    // Clean up previous blob URL
+    if (this.currentBlobUrl) {
+      try { URL.revokeObjectURL(this.currentBlobUrl); } catch(_) {}
+      this.currentBlobUrl = null;
+    }
+    this.isCurrentLocallyCached = false;
+
+    // Check if song is already cached in IndexedDB
+    let cached = null;
+    if (window.audioCache) {
+      try {
+        cached = await window.audioCache.getTrack(track.id);
+      } catch (e) {
+        console.warn('Error checking cache:', e);
+      }
+    }
+
+    if (cached && cached.blob) {
+      // PLAY FROM LOCAL CACHE (100% OFFLINE / ZERO NETWORK USAGE)
+      this.isCurrentLocallyCached = true;
+      this.currentBlobUrl = URL.createObjectURL(cached.blob);
+      this.audio.src = this.currentBlobUrl;
+      this.emit('cachedstatus', { trackId: track.id, isCached: true });
+    } else {
+      // PLAY STREAM FROM SERVER
+      this.audio.src = /api/stream/?t=;
+      this.emit('cachedstatus', { trackId: track.id, isCached: false });
+
+      // Automatically cache in background so it keeps playing if megas/wifi run out!
+      if (window.audioCache && navigator.onLine !== false) {
+        window.audioCache.cacheTrack(track).then((ok) => {
+          if (ok && this.currentTrack && this.currentTrack.id === track.id) {
+            this.emit('cachedstatus', { trackId: track.id, isCached: true });
+            // Pre-cache next song in queue for seamless offline progression
+            this.preCacheNextTrack();
+          }
+        }).catch(() => {});
+      }
+    }
+
     this.audio.load();
 
     const p = this.audio.play();
-    if (p) p.catch(err => {
-      if (err.name === 'AbortError') return;
-      console.warn('Play error:', err);
-      this.isPlaying = false;
-      this.isLoading = false;
-      this.emit('loading', false);
-      this.emit('pause');
-    });
+    if (p) {
+      p.catch(err => {
+        if (err.name === 'AbortError') return;
+        console.warn('Play error:', err);
+        this.isPlaying = false;
+        this.isLoading = false;
+        this.emit('loading', false);
+        this.emit('pause');
+      });
+    }
+  }
+
+  // Pre-cache the next track in the queue in background
+  preCacheNextTrack() {
+    if (!window.audioCache || navigator.onLine === false || !this.queue.length) return;
+    const nextIdx = this.queueIndex + 1;
+    if (nextIdx < this.queue.length) {
+      const nextTrack = this.queue[nextIdx];
+      if (nextTrack && nextTrack.id) {
+        window.audioCache.isCached(nextTrack.id).then(cached => {
+          if (!cached) {
+            window.audioCache.cacheTrack(nextTrack).catch(() => {});
+          }
+        });
+      }
+    }
   }
 
   play() {
@@ -166,7 +274,15 @@ class SpotifyPlayer {
     this.isPlaying = true;
     this.emit('play');
     const p = this.audio.play();
-    if (p) p.catch(err => { if (err.name !== 'AbortError') { console.warn(err); this.isPlaying = false; this.emit('pause'); } });
+    if (p) {
+      p.catch(err => {
+        if (err.name !== 'AbortError') {
+          console.warn(err);
+          this.isPlaying = false;
+          this.emit('pause');
+        }
+      });
+    }
   }
 
   pause() {
@@ -177,7 +293,10 @@ class SpotifyPlayer {
     this.emit('pause');
   }
 
-  togglePlay() { if (!this.audio.paused) this.pause(); else this.play(); }
+  togglePlay() {
+    if (!this.audio.paused) this.pause();
+    else this.play();
+  }
 
   seek(seconds) {
     if (this.audio.duration && !isNaN(this.audio.duration)) {
@@ -208,7 +327,10 @@ class SpotifyPlayer {
   }
 
   previous() {
-    if ((this.audio.currentTime || 0) > 3) { this.seek(0); return; }
+    if ((this.audio.currentTime || 0) > 3) {
+      this.seek(0);
+      return;
+    }
     if (!this.queue.length) return;
     let idx = this.queueIndex - 1;
     if (idx < 0) idx = this.queue.length - 1;
