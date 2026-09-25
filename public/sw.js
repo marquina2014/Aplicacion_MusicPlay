@@ -1,14 +1,14 @@
-const CACHE_NAME = 'musicplay-shell-v15';
+const CACHE_NAME = 'musicplay-shell-v16';
 
 const APP_SHELL = [
   '/',
   '/index.html',
-  '/css/spotify.css?v=15',
+  '/css/spotify.css?v=16',
   '/js/supabase.js',
-  '/js/supabase-config.js?v=15',
-  '/js/audio-cache.js?v=15',
-  '/js/player.js?v=15',
-  '/js/app.js?v=15',
+  '/js/supabase-config.js?v=16',
+  '/js/audio-cache.js?v=16',
+  '/js/player.js?v=16',
+  '/js/app.js?v=16',
   '/manifest.json',
   '/icons/icon-192.png',
   '/icons/icon-512.png'

@@ -1248,6 +1248,10 @@ class SpotifyApp {
     this.player.on('playback-resumed-offline', () => {
       showToast('Reproduciendo desde la memoria caché');
     });
+
+    this.player.on('error', (msg) => {
+      showToast(msg || 'Error al reproducir');
+    });
   }
 
   switchView(viewName) {

@@ -84,14 +84,23 @@ async function getSCClientId() {
   return scClientId;
 }
 
+// ─── SoundCloud Playable Filter ──────────────────────────────────────────────
+function isPlayableTrack(t) {
+  if (!t || !t.streamable || !t.title) return false;
+  const transcodings = t.media?.transcodings || [];
+  return transcodings.some(tr => tr.format?.protocol === 'progressive');
+}
+
 // ─── SoundCloud Search ────────────────────────────────────────────────────────
-async function scSearch(query, limit = 25) {
+async function scSearch(query, limit = 35) {
   const cid = await getSCClientId();
   const url = `https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(query)}&client_id=${cid}&limit=${limit}&offset=0&linked_partitioning=1`;
   const res = await fetch(url, { headers: { 'User-Agent': SC_UA } });
   if (!res.ok) throw new Error(`SC search HTTP ${res.status}`);
   const data = await res.json();
-  return (data.collection || []).filter(t => t.streamable && t.title);
+  const collection = data.collection || [];
+  const playable = collection.filter(t => isPlayableTrack(t));
+  return playable.length > 0 ? playable : collection.filter(t => t.streamable && t.title);
 }
 
 // ─── SoundCloud Stream URL ────────────────────────────────────────────────────
@@ -113,19 +122,41 @@ async function scResolveStreamUrl(trackId, forceFresh = false) {
   // Prefer progressive MP3 → best for iOS native <audio>
   const mp3prog = transcodings.find(t => t.format?.protocol === 'progressive' && t.format?.mime_type?.includes('mpeg'));
   const anyProg = transcodings.find(t => t.format?.protocol === 'progressive');
-  const hls     = transcodings.find(t => t.format?.protocol === 'hls');
+  const hls     = transcodings.find(t => t.format?.protocol === 'hls' && !t.format?.protocol?.includes('encrypted'));
   const chosen  = mp3prog || anyProg || hls;
-  if (!chosen) throw new Error('No streamable transcoding found');
 
-  // Resolve CDN URL
-  const streamRes = await fetch(`${chosen.url}?client_id=${cid}`, { headers: { 'User-Agent': SC_UA } });
-  if (!streamRes.ok) throw new Error(`SC stream resolve HTTP ${streamRes.status}`);
-  const { url: cdnUrl } = await streamRes.json();
-  if (!cdnUrl) throw new Error('No CDN URL returned');
+  let cdnUrl = null;
+
+  if (chosen) {
+    try {
+      const streamRes = await fetch(`${chosen.url}?client_id=${cid}`, { headers: { 'User-Agent': SC_UA } });
+      if (streamRes.ok) {
+        const streamData = await streamRes.json();
+        cdnUrl = streamData.url || null;
+      }
+    } catch (_) {}
+  }
+
+  // If no playable stream or resolving returned 404 (e.g. SoundCloud Go+ DRM lock)
+  if (!cdnUrl) {
+    console.warn(`[${trackId}] ⚠️ Track "${track.title}" no tiene stream libre (Go+ DRM o 404). Buscando alternativa reproducible...`);
+    try {
+      const cleanTitle = (track.title || '').replace(/\(.*?\)/g, '').replace(/\[.*?\]/g, '').trim();
+      const altTracks = await scSearch(`${cleanTitle} ${track.user?.username || ''}`, 10);
+      const playableAlt = altTracks.find(a => String(a.id) !== String(trackId));
+      if (playableAlt) {
+        console.log(`[${trackId}] ✅ Conmutado automáticamente a versión reproducible: [${playableAlt.id}] "${playableAlt.title}"`);
+        return await scResolveStreamUrl(playableAlt.id);
+      }
+    } catch (fallbackErr) {
+      console.warn(`[${trackId}] Fallback search failed:`, fallbackErr.message);
+    }
+    throw new Error('No streamable transcoding found for track');
+  }
 
   // SoundCloud CDN URLs are valid ~1 hour; cache 55 min
   streamCache.set(trackId, { url: cdnUrl, expiresAt: Date.now() + 55 * 60 * 1000 });
-  console.log(`[${trackId}] ✅ SoundCloud stream (${chosen.format?.protocol})`);
+  console.log(`[${trackId}] ✅ SoundCloud stream (${chosen ? chosen.format?.protocol : 'progressive'})`);
   return cdnUrl;
 }
 

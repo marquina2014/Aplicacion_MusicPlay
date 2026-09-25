@@ -125,7 +125,12 @@ class SpotifyPlayer {
       this.isLoading = false;
       this.isPlaying = false;
       this.emit('loading', false);
-      this.emit('error', 'Error al reproducir. Revisa tu conexión.');
+      this.emit('error', 'Esta versión no está disponible por restricciones del autor. Probando siguiente...');
+      if (this.queue && this.queue.length > 1) {
+        setTimeout(() => {
+          if (!this.isPlaying) this.next();
+        }, 1800);
+      }
     });
   }
 
