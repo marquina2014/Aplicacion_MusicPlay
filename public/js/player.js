@@ -1,4 +1,4 @@
-﻿/**
+/**
  * MusicPlay Player - Native Audio with Offline Cache Support
  * Uses HTML5 <audio> with IndexedDB offline caching and /api/stream/:id.
  * Supports iOS Safari background playback via MediaSession API.
@@ -99,7 +99,7 @@ class SpotifyPlayer {
           const cached = await window.audioCache.getTrack(this.currentTrack.id);
           if (cached && cached.blob && !this.isCurrentLocallyCached) {
             const resumePos = a.currentTime || 0;
-            console.log([Player] Conexión perdida, recuperando reproducción desde caché local en s);
+            console.log('[Player] Conexión perdida, recuperando reproducción desde caché local en ' + resumePos + 's');
             
             if (this.currentBlobUrl) {
               URL.revokeObjectURL(this.currentBlobUrl);
@@ -185,6 +185,21 @@ class SpotifyPlayer {
   async loadAndPlay(track, queue = [], index = 0) {
     if (!track || !track.id) return;
 
+    // Auto-migrate legacy non-numeric IDs (e.g. YouTube IDs saved in playlists/favorites)
+    if (!/^\d+$/.test(String(track.id)) && track.title) {
+      try {
+        const query = track.title + ' ' + (track.artist || '');
+        const sRes = await fetch('/api/search?q=' + encodeURIComponent(query));
+        const sData = await sRes.json();
+        if (sData.tracks && sData.tracks.length > 0) {
+          console.log('[Player] Migrando pista legacy a SoundCloud ID:', sData.tracks[0].id);
+          track.id = sData.tracks[0].id;
+        }
+      } catch (e) {
+        console.warn('Could not migrate legacy track ID:', e);
+      }
+    }
+
     this.currentTrack = track;
     this.queue = queue.length ? [...queue] : [track];
     this.queueIndex = queue.length ? index : 0;
@@ -220,7 +235,7 @@ class SpotifyPlayer {
       this.emit('cachedstatus', { trackId: track.id, isCached: true });
     } else {
       // PLAY STREAM FROM SERVER
-      this.audio.src = /api/stream/?t=;
+      this.audio.src = '/api/stream/' + track.id + '?t=' + Date.now();
       this.emit('cachedstatus', { trackId: track.id, isCached: false });
 
       // Automatically cache in background so it keeps playing if megas/wifi run out!

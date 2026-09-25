@@ -48,30 +48,40 @@ const SC_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHT
 let scClientId        = null;
 let scClientIdFetched = 0;
 
+const FALLBACK_CLIENT_ID = 'pmagYZKQF6mRtNmtRzPkXSQJ76jYHLN8';
+
 async function getSCClientId() {
   if (scClientId && (Date.now() - scClientIdFetched) < 12 * 60 * 60 * 1000) return scClientId;
 
   console.log('🔑 Fetching SoundCloud client_id...');
-  const homeRes = await fetch('https://soundcloud.com', { headers: { 'User-Agent': SC_UA } });
-  const html = await homeRes.text();
+  try {
+    const homeRes = await fetch('https://soundcloud.com', { headers: { 'User-Agent': SC_UA } });
+    const html = await homeRes.text();
 
-  const scriptUrls = [...html.matchAll(/src="(https:\/\/a-v2\.sndcdn\.com\/assets\/[^"]+\.js)"/g)]
-    .map(m => m[1]).slice(-5);
+    const scriptUrls = [...html.matchAll(/src="(https:\/\/a-v2\.sndcdn\.com\/assets\/[^"]+\.js)"/g)]
+      .map(m => m[1]);
 
-  for (const url of scriptUrls) {
-    try {
-      const r = await fetch(url, { headers: { 'User-Agent': SC_UA } });
-      const txt = await r.text();
-      const m = txt.match(/client_id:"([a-zA-Z0-9]{32})"/);
-      if (m) {
-        scClientId = m[1];
-        scClientIdFetched = Date.now();
-        console.log(`✅ SoundCloud client_id: ${scClientId.slice(0,8)}...`);
-        return scClientId;
-      }
-    } catch(_) {}
+    for (let i = scriptUrls.length - 1; i >= 0; i--) {
+      try {
+        const r = await fetch(scriptUrls[i], { headers: { 'User-Agent': SC_UA } });
+        const txt = await r.text();
+        const m = txt.match(/client_id:"([a-zA-Z0-9]{32})"/);
+        if (m) {
+          scClientId = m[1];
+          scClientIdFetched = Date.now();
+          console.log(`✅ SoundCloud client_id: ${scClientId.slice(0,8)}...`);
+          return scClientId;
+        }
+      } catch(_) {}
+    }
+  } catch(e) {
+    console.warn('Scraping client_id failed:', e.message);
   }
-  throw new Error('Could not obtain SoundCloud client_id');
+
+  scClientId = FALLBACK_CLIENT_ID;
+  scClientIdFetched = Date.now();
+  console.log(`⚡ Usando client_id de respaldo: ${scClientId.slice(0,8)}...`);
+  return scClientId;
 }
 
 // ─── SoundCloud Search ────────────────────────────────────────────────────────
@@ -160,7 +170,18 @@ app.get('/api/stream/:id', async (req, res) => {
   if (!trackId || !/^\d+$/.test(trackId)) return res.status(400).send('Invalid track ID');
 
   try {
-    const cdnUrl = await scResolveStreamUrl(trackId);
+    let cdnUrl;
+    try {
+      cdnUrl = await scResolveStreamUrl(trackId);
+    } catch (e1) {
+      if (e1.message.includes('401') || e1.message.includes('client_id')) {
+        console.log(`[${trackId}] Client ID expired, refreshing and retrying...`);
+        scClientId = null;
+        cdnUrl = await scResolveStreamUrl(trackId, true);
+      } else {
+        throw e1;
+      }
+    }
 
     // If client specifically requests proxy streaming / download
     if (req.query.proxy === '1') {
