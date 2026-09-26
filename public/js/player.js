@@ -191,7 +191,7 @@ class SpotifyPlayer {
     if (!track || !track.id) return;
 
     // Auto-migrate legacy non-numeric IDs (e.g. YouTube IDs saved in playlists/favorites)
-    if (!/^\d+$/.test(String(track.id)) && track.title) {
+    if (!track.isCloud && !track.streamUrl && !/^\d+$/.test(String(track.id)) && track.title) {
       try {
         const query = track.title + ' ' + (track.artist || '');
         const sRes = await fetch('/api/search?q=' + encodeURIComponent(query));
@@ -238,6 +238,20 @@ class SpotifyPlayer {
       this.currentBlobUrl = URL.createObjectURL(cached.blob);
       this.audio.src = this.currentBlobUrl;
       this.emit('cachedstatus', { trackId: track.id, isCached: true });
+    } else if (track.streamUrl) {
+      // PLAY DIRECT STREAM FROM CLOUD (Supabase Storage / Public CDN)
+      this.audio.src = track.streamUrl;
+      this.emit('cachedstatus', { trackId: track.id, isCached: false });
+
+      // Automatically cache in background so it keeps playing offline
+      if (window.audioCache && navigator.onLine !== false) {
+        window.audioCache.cacheTrack(track).then((ok) => {
+          if (ok && this.currentTrack && this.currentTrack.id === track.id) {
+            this.emit('cachedstatus', { trackId: track.id, isCached: true });
+            this.preCacheNextTrack();
+          }
+        }).catch(() => {});
+      }
     } else {
       // PLAY STREAM FROM SERVER
       this.audio.src = '/api/stream/' + track.id + '?t=' + Date.now();

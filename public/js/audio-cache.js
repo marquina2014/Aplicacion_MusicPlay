@@ -234,13 +234,18 @@ class AudioCacheManager {
     this.emit('download-start', { trackId: strId, track });
 
     try {
-      let res = await fetch('/api/stream/' + strId).catch(() => null);
-      if (!res || !res.ok) {
-        res = await fetch('/api/stream/' + strId + '?proxy=1');
+      let res = null;
+      if (track.streamUrl) {
+        res = await fetch(track.streamUrl).catch(() => null);
+      } else {
+        res = await fetch('/api/stream/' + strId).catch(() => null);
+        if (!res || !res.ok) {
+          res = await fetch('/api/stream/' + strId + '?proxy=1');
+        }
       }
 
-      if (!res.ok) {
-        throw new Error('Stream fetch failed: HTTP ' + res.status);
+      if (!res || !res.ok) {
+        throw new Error('Stream fetch failed: HTTP ' + (res ? res.status : 'network error'));
       }
 
       const blob = await res.blob();

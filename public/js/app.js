@@ -36,6 +36,9 @@ class SpotifyApp {
     this.currentView = 'home';
     this.isDraggingScrub = false;
 
+    this.selectedAudioFile = null;
+    this.selectedAudioDuration = 0;
+
     this.init();
   }
 
@@ -428,12 +431,15 @@ class SpotifyApp {
   // PLAYLISTS MANAGEMENT (Supabase Cloud + Local Storage fallback)
   // -------------------------------------------------------------
   getLocalPlaylists() {
+    let lists = [];
     try {
       const raw = localStorage.getItem('spotify_playlists_cache');
-      if (raw) return JSON.parse(raw);
+      if (raw) lists = JSON.parse(raw);
     } catch (e) {}
-    return [
-      {
+
+    // Ensure "Tus me gusta" exists
+    if (!lists.some(p => p.systemType === 'favorites' || p.id === 'favorites')) {
+      lists.unshift({
         id: 'favorites',
         name: 'Tus me gusta',
         description: 'Tus canciones favoritas guardadas',
@@ -441,14 +447,46 @@ class SpotifyApp {
         systemType: 'favorites',
         cover: 'https://misc.scdn.co/liked-songs/liked-songs-300.png',
         tracks: []
-      }
-    ];
+      });
+    }
+
+    // Ensure "Mi Nube" exists
+    if (!lists.some(p => p.systemType === 'cloud' || p.id === 'cloud_library')) {
+      lists.push({
+        id: 'cloud_library',
+        name: 'Mi Nube (Subidas)',
+        description: 'Tus canciones subidas para escuchar sin restricciones',
+        isSystem: true,
+        systemType: 'cloud',
+        cover: '/icons/icon-512.png',
+        tracks: []
+      });
+    }
+
+    return lists;
   }
 
   saveLocalPlaylists(lists) {
     try {
       localStorage.setItem('spotify_playlists_cache', JSON.stringify(lists));
     } catch (e) {}
+  }
+
+  getCloudPlaylist() {
+    let pl = this.playlists.find(p => p.systemType === 'cloud' || p.id === 'cloud_library');
+    if (!pl) {
+      pl = {
+        id: 'cloud_library',
+        name: 'Mi Nube (Subidas)',
+        description: 'Tus canciones subidas para escuchar sin restricciones',
+        isSystem: true,
+        systemType: 'cloud',
+        cover: '/icons/icon-512.png',
+        tracks: []
+      };
+      this.playlists.push(pl);
+    }
+    return pl;
   }
 
   async loadPlaylists() {
@@ -503,6 +541,28 @@ class SpotifyApp {
             addedAt: t.added_at
           }))
         }));
+
+        // Ensure "Mi Nube" playlist exists (merged with local cloud tracks)
+        const localLists = this.getLocalPlaylists();
+        const localCloud = localLists.find(p => p.systemType === 'cloud' || p.id === 'cloud_library');
+        let cloudPlaylist = this.playlists.find(p => p.systemType === 'cloud' || p.id === 'cloud_library');
+        if (!cloudPlaylist) {
+          this.playlists.push(localCloud || {
+            id: 'cloud_library',
+            name: 'Mi Nube (Subidas)',
+            description: 'Tus canciones subidas para escuchar sin restricciones',
+            isSystem: true,
+            systemType: 'cloud',
+            cover: '/icons/icon-512.png',
+            tracks: []
+          });
+        } else if (localCloud && localCloud.tracks && localCloud.tracks.length > 0) {
+          localCloud.tracks.forEach(lt => {
+            if (!cloudPlaylist.tracks.some(ct => ct.id === lt.id)) {
+              cloudPlaylist.tracks.push(lt);
+            }
+          });
+        }
 
         this.renderLibrary();
         if (this.player.currentTrack) {
@@ -1106,10 +1166,66 @@ class SpotifyApp {
       if (e.key === 'Enter') handleQuickCreate();
     });
 
+    // Upload Track to Cloud Modal Listeners
+    document.getElementById('upload-track-btn')?.addEventListener('click', () => {
+      this.openUploadModal();
+    });
+    document.getElementById('close-upload-modal')?.addEventListener('click', () => {
+      this.closeUploadModal();
+    });
+    document.getElementById('upload-cancel-btn')?.addEventListener('click', () => {
+      this.closeUploadModal();
+    });
+
+    const dropzone = document.getElementById('upload-dropzone');
+    const audioFileInput = document.getElementById('upload-audio-file');
+    if (dropzone && audioFileInput) {
+      dropzone.addEventListener('click', () => audioFileInput.click());
+
+      audioFileInput.addEventListener('change', (e) => {
+        if (e.target.files && e.target.files[0]) {
+          this.handleAudioFileSelect(e.target.files[0]);
+        }
+      });
+
+      ['dragenter', 'dragover'].forEach(name => {
+        dropzone.addEventListener(name, (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          dropzone.classList.add('dragover');
+        });
+      });
+
+      ['dragleave', 'drop'].forEach(name => {
+        dropzone.addEventListener(name, (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          dropzone.classList.remove('dragover');
+        });
+      });
+
+      dropzone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropzone.classList.remove('dragover');
+        if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) {
+          this.handleAudioFileSelect(e.dataTransfer.files[0]);
+        }
+      });
+    }
+
+    document.getElementById('upload-form')?.addEventListener('submit', (e) => {
+      this.handleUploadSubmit(e);
+    });
+
     // Playlist Detail: Add tracks button
     document.getElementById('playlist-add-tracks-btn')?.addEventListener('click', () => {
       if (!this.activePlaylist) return;
-      this.openSearchPlaylistModal(this.activePlaylist);
+      if (this.activePlaylist.systemType === 'cloud' || this.activePlaylist.id === 'cloud_library') {
+        this.openUploadModal();
+      } else {
+        this.openSearchPlaylistModal(this.activePlaylist);
+      }
     });
 
     document.getElementById('close-search-playlist-modal')?.addEventListener('click', () => {
@@ -1443,7 +1559,7 @@ class SpotifyApp {
           </div>
         </div>
         <div class="track-info">
-          <div class="track-title">${track.title}</div>
+          <div class="track-title">${track.title}${track.isCloud || track.streamUrl ? '<span class="cloud-badge" title="Canción en tu nube">☁️ Nube</span>' : ''}</div>
           <div class="track-artist">${track.artist}</div>
         </div>
         <div class="track-duration">${track.durationFormatted || track.duration_formatted || '0:00'}</div>
@@ -1672,7 +1788,38 @@ class SpotifyApp {
       });
     }
 
-    this.playlists.forEach(pl => {
+    // Mi Nube Smart Card
+    const cloudPl = this.getCloudPlaylist();
+    const cloudTrackCount = cloudPl && cloudPl.tracks ? cloudPl.tracks.length : 0;
+    const cloudCard = document.createElement('div');
+    cloudCard.className = 'cloud-library-card';
+    cloudCard.innerHTML = `
+      <div style="display:flex; align-items:center; gap:14px;">
+        <div class="cloud-card-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/>
+          </svg>
+        </div>
+        <div>
+          <div class="cloud-card-title">Mi Nube (Subidas)</div>
+          <div class="cloud-card-desc">${cloudTrackCount} ${cloudTrackCount === 1 ? 'canción subida' : 'canciones subidas'} • Sin restricciones</div>
+        </div>
+      </div>
+      <button class="btn btn-primary" style="font-size:12px; padding:6px 14px; border-radius:500px;" id="cloud-card-upload-btn">
+        + Subir
+      </button>
+    `;
+    cloudCard.addEventListener('click', (e) => {
+      if (e.target.closest('#cloud-card-upload-btn')) {
+        e.stopPropagation();
+        this.openUploadModal();
+        return;
+      }
+      this.openPlaylist(cloudPl);
+    });
+    grid.appendChild(cloudCard);
+
+    this.playlists.filter(p => p.id !== 'cloud_library' && p.systemType !== 'cloud').forEach(pl => {
       const card = document.createElement('div');
       card.className = 'playlist-card';
       const cover = pl.cover || (pl.isSystem ? 'https://misc.scdn.co/liked-songs/liked-songs-300.png' : '/icons/icon-192.png');
@@ -1761,23 +1908,259 @@ class SpotifyApp {
     const addTracksBtn = document.getElementById('playlist-add-tracks-btn');
     if (addTracksBtn) {
       addTracksBtn.style.display = 'flex';
+      const label = addTracksBtn.querySelector('span');
+      if (playlist.systemType === 'cloud' || playlist.id === 'cloud_library') {
+        if (label) label.textContent = 'Subir canción';
+      } else {
+        if (label) label.textContent = 'Añadir canciones';
+      }
     }
 
     const container = document.getElementById('playlist-tracks-container');
     if (playlist.tracks && playlist.tracks.length > 0) {
       this.renderTrackList(playlist.tracks, container, playlist.tracks, playlist);
     } else {
-      container.innerHTML = '<p style="text-align:center; color:#b3b3b3; margin-top:24px;">No hay canciones en esta lista.<br>¡Toca "Añadir canciones" arriba para buscar y agregar!</p>';
+      if (playlist.systemType === 'cloud' || playlist.id === 'cloud_library') {
+        container.innerHTML = '<p style="text-align:center; color:#b3b3b3; margin-top:24px;">Aún no has subido canciones a tu nube.<br>Toca <strong>"Subir canción"</strong> arriba para cargar tu música favorita en MP3/M4A.</p>';
+      } else {
+        container.innerHTML = '<p style="text-align:center; color:#b3b3b3; margin-top:24px;">No hay canciones en esta lista.<br>¡Toca "Añadir canciones" arriba para buscar y agregar!</p>';
+      }
     }
 
     // Toggle delete playlist button visibility
     const delBtn = document.getElementById('playlist-delete-btn');
     if (delBtn) {
       delBtn.onclick = null;
-      delBtn.style.display = (!playlist.isSystem && playlist.id !== 'favorites') ? 'block' : 'none';
+      delBtn.style.display = (!playlist.isSystem && playlist.id !== 'favorites' && playlist.id !== 'cloud_library' && playlist.systemType !== 'cloud') ? 'block' : 'none';
     }
 
     this.switchView('playlist-detail');
+  }
+
+  // -------------------------------------------------------------
+  // CLOUD UPLOAD MODAL & HANDLERS
+  // -------------------------------------------------------------
+  openUploadModal() {
+    this.selectedAudioFile = null;
+    this.selectedAudioDuration = 0;
+    const form = document.getElementById('upload-form');
+    if (form) form.reset();
+
+    const fileInput = document.getElementById('upload-audio-file');
+    if (fileInput) fileInput.value = '';
+
+    const dropLabel = document.getElementById('upload-dropzone-label');
+    if (dropLabel) {
+      dropLabel.innerHTML = `<strong>Toca aquí o arrastra un archivo de audio</strong><div style="font-size:12px; color:var(--text-subdued); margin-top:4px;">MP3, M4A, AAC, FLAC o WAV</div>`;
+    }
+
+    const fileMeta = document.getElementById('upload-file-meta');
+    if (fileMeta) fileMeta.style.display = 'none';
+
+    const progWrap = document.getElementById('upload-progress-wrap');
+    if (progWrap) progWrap.style.display = 'none';
+
+    const submitBtn = document.getElementById('upload-submit-btn');
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Subir a Mi Nube';
+    }
+
+    this.openModal('upload-modal');
+  }
+
+  closeUploadModal() {
+    this.closeModal('upload-modal');
+    this.selectedAudioFile = null;
+    this.selectedAudioDuration = 0;
+  }
+
+  async handleAudioFileSelect(file) {
+    if (!file) return;
+
+    // Validate extension / MIME
+    const validExtensions = ['.mp3', '.m4a', '.aac', '.wav', '.flac', '.ogg'];
+    const fileName = file.name.toLowerCase();
+    const hasValidExt = validExtensions.some(ext => fileName.endsWith(ext));
+    if (!file.type.startsWith('audio/') && !hasValidExt) {
+      showToast('Por favor selecciona un archivo de audio válido (.mp3, .m4a, .aac, etc.)');
+      return;
+    }
+
+    this.selectedAudioFile = file;
+
+    // Parse title and artist from filename
+    // Example: "Caramelos De Cianuro - 2 Caras 2 Corazones.mp3"
+    let cleanName = file.name.replace(/\.[^/.]+$/, '');
+    let artist = '';
+    let title = cleanName;
+
+    if (cleanName.includes(' - ')) {
+      const parts = cleanName.split(' - ');
+      artist = parts[0].trim();
+      title = parts.slice(1).join(' - ').trim();
+    } else if (cleanName.includes('-')) {
+      const parts = cleanName.split('-');
+      artist = parts[0].trim();
+      title = parts.slice(1).join('-').trim();
+    }
+
+    // Strip leading track numbers like "01. " or "01 "
+    title = title.replace(/^\d+[\.\s\-]+/, '').trim();
+
+    const titleInput = document.getElementById('upload-title');
+    const artistInput = document.getElementById('upload-artist');
+    if (titleInput) titleInput.value = title || cleanName;
+    if (artistInput) artistInput.value = artist || (this.currentUser ? this.currentUser.email.split('@')[0] : 'Mi Nube');
+
+    // Update dropzone UI
+    const dropLabel = document.getElementById('upload-dropzone-label');
+    if (dropLabel) {
+      const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
+      dropLabel.innerHTML = `<strong style="color:var(--primary);">${file.name}</strong><div style="font-size:12px; color:var(--text-subdued); margin-top:4px;">${sizeMB} MB • Archivo listo</div>`;
+    }
+
+    // Try to detect audio duration using temporary Audio object
+    try {
+      const tempUrl = URL.createObjectURL(file);
+      const tempAudio = new Audio();
+      tempAudio.src = tempUrl;
+      tempAudio.addEventListener('loadedmetadata', () => {
+        this.selectedAudioDuration = Math.round(tempAudio.duration) || 0;
+        const metaEl = document.getElementById('upload-file-meta');
+        const nameEl = document.getElementById('upload-file-name');
+        const durEl = document.getElementById('upload-file-duration');
+        if (metaEl && nameEl && durEl) {
+          metaEl.style.display = 'flex';
+          nameEl.textContent = file.name;
+          durEl.textContent = formatTime(this.selectedAudioDuration);
+        }
+        URL.revokeObjectURL(tempUrl);
+      }, { once: true });
+    } catch (e) {
+      console.warn('Could not read audio metadata:', e);
+    }
+  }
+
+  async handleUploadSubmit(e) {
+    if (e) e.preventDefault();
+
+    if (!this.selectedAudioFile) {
+      showToast('Por favor selecciona un archivo de audio primero');
+      return;
+    }
+
+    const titleInput = document.getElementById('upload-title');
+    const artistInput = document.getElementById('upload-artist');
+    const title = (titleInput ? titleInput.value.trim() : '') || this.selectedAudioFile.name;
+    const artist = (artistInput ? artistInput.value.trim() : '') || 'Artista';
+
+    const progWrap = document.getElementById('upload-progress-wrap');
+    const progFill = document.getElementById('upload-progress-fill');
+    const progText = document.getElementById('upload-progress-text');
+    const submitBtn = document.getElementById('upload-submit-btn');
+
+    if (progWrap) progWrap.style.display = 'block';
+    if (progFill) progFill.style.width = '30%';
+    if (progText) progText.textContent = 'Guardando en la memoria del dispositivo...';
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Procesando...';
+    }
+
+    const file = this.selectedAudioFile;
+    const trackId = 'cloud_' + Date.now();
+    const duration = this.selectedAudioDuration || 0;
+
+    const newTrack = {
+      id: trackId,
+      title: title,
+      artist: artist,
+      thumbnail: '/icons/icon-512.png',
+      duration: duration,
+      durationFormatted: formatTime(duration),
+      isCloud: true,
+      addedAt: new Date().toISOString()
+    };
+
+    // 1. Save IMMEDIATELY into local IndexedDB cache so it's 100% playable offline
+    if (window.audioCache) {
+      try {
+        await window.audioCache.saveTrack(newTrack, file);
+      } catch (err) {
+        console.warn('Error saving to local audio cache:', err);
+      }
+    }
+
+    if (progFill) progFill.style.width = '60%';
+    if (progText) progText.textContent = 'Sincronizando con la nube (Supabase Storage)...';
+
+    // 2. Attempt upload to Supabase Storage if configured and online
+    let cloudPublicUrl = null;
+    if (this.supabase && navigator.onLine) {
+      try {
+        const userFolder = this.currentUser ? this.currentUser.id : 'shared';
+        const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const storagePath = `tracks/${userFolder}/${Date.now()}_${safeName}`;
+
+        const { data: uploadData, error: uploadErr } = await this.supabase.storage
+          .from('music')
+          .upload(storagePath, file, {
+            cacheControl: '3600',
+            upsert: true
+          });
+
+        if (!uploadErr && uploadData) {
+          const { data: urlData } = this.supabase.storage
+            .from('music')
+            .getPublicUrl(storagePath);
+          if (urlData && urlData.publicUrl) {
+            cloudPublicUrl = urlData.publicUrl;
+            newTrack.streamUrl = cloudPublicUrl;
+          }
+        } else if (uploadErr) {
+          console.warn('Supabase storage upload error:', uploadErr.message);
+        }
+      } catch (err) {
+        console.warn('Supabase upload exception:', err);
+      }
+    }
+
+    if (progFill) progFill.style.width = '100%';
+    if (progText) progText.textContent = '¡Listo!';
+
+    // 3. Add to "Mi Nube" playlist
+    const cloudPl = this.getCloudPlaylist();
+    cloudPl.tracks = cloudPl.tracks || [];
+    cloudPl.tracks.unshift(newTrack);
+
+    // Save to local storage cache
+    this.saveLocalPlaylists(this.playlists);
+
+    // If Supabase database is active, also try saving to playlist_tracks in db
+    if (this.supabase && this.currentUser && cloudPl.id !== 'cloud_library') {
+      try {
+        await this.supabase.from('playlist_tracks').insert([{
+          playlist_id: cloudPl.id,
+          track_id: newTrack.id,
+          title: newTrack.title,
+          artist: newTrack.artist,
+          thumbnail: newTrack.thumbnail,
+          duration: newTrack.duration,
+          duration_formatted: newTrack.durationFormatted
+        }]);
+      } catch (_) {}
+    }
+
+    showToast('¡Canción guardada en Mi Nube y lista para escuchar! ☁️');
+    this.closeUploadModal();
+
+    // Refresh UI
+    if (this.currentView === 'library') {
+      this.renderLibrary();
+    } else if (this.activePlaylist && (this.activePlaylist.id === 'cloud_library' || this.activePlaylist.systemType === 'cloud')) {
+      this.openPlaylist(cloudPl);
+    }
   }
 
   // Modals management

@@ -1210,3 +1210,119 @@ body {
   color: var(--text-subdued);
   margin-top: 3px;
 }
+
+/* Mi Nube Library Card */
+.cloud-library-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  background: linear-gradient(135deg, #132e1e 0%, #102116 100%);
+  border: 1px solid rgba(29, 185, 84, 0.35);
+  border-radius: 12px;
+  padding: 16px 18px;
+  margin-bottom: 14px;
+  cursor: pointer;
+  transition: transform 0.15s, background 0.2s;
+}
+.cloud-library-card:active {
+  transform: scale(0.98);
+  background: linear-gradient(135deg, #1a3e29 0%, #14281c 100%);
+}
+.cloud-card-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(29, 185, 84, 0.18);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--primary);
+}
+.cloud-card-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #ffffff;
+}
+.cloud-card-desc {
+  font-size: 12px;
+  color: var(--text-subdued);
+  margin-top: 3px;
+}
+
+/* Cloud Track Badge */
+.cloud-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(29, 185, 84, 0.15);
+  color: var(--primary);
+  border: 1px solid rgba(29, 185, 84, 0.3);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 10px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+/* Upload Dropzone & Form */
+.upload-dropzone {
+  border: 2px dashed rgba(255, 255, 255, 0.2);
+  border-radius: 12px;
+  padding: 24px 16px;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.upload-dropzone:hover,
+.upload-dropzone.dragover {
+  border-color: var(--primary);
+  background: rgba(29, 185, 84, 0.08);
+}
+.upload-dropzone-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: rgba(29, 185, 84, 0.12);
+  color: var(--primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 12px;
+}
+.upload-dropzone-label {
+  font-size: 14px;
+  color: #ffffff;
+}
+
+/* Upload Progress Bar */
+.upload-progress-wrap {
+  width: 100%;
+}
+.upload-progress-bar {
+  width: 100%;
+  height: 6px;
+  background: #282828;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+.upload-progress-fill {
+  height: 100%;
+  background: var(--primary);
+  border-radius: 4px;
+  transition: width 0.2s ease;
+}
+.upload-progress-text {
+  font-size: 11px;
+  color: var(--text-subdued);
+  text-align: center;
+}
+
